@@ -287,8 +287,9 @@ static size_t listen_sockets_num;
 static int listen_loop;
 static int receive_thread_running;
 static pthread_t receive_thread_id;
-static int dispatch_thread_running;
-static pthread_t dispatch_thread_id;
+static int dispatch_threads_running;
+static pthread_t *dispatch_thread_ids;
+static int dispatch_threads_number = 1;
 
 /* Buffer in which to-be-sent network packets are constructed. */
 static char *send_buffer;
@@ -2204,55 +2205,52 @@ static int sockent_add(sockent_t *se) /* {{{ */
 static void *dispatch_thread(void __attribute__((unused)) * arg) /* {{{ */
 {
   while (42) {
-    receive_list_entry_t *ent;
-    sockent_t *se;
-
     /* Lock and wait for more data to come in */
     pthread_mutex_lock(&receive_list_lock);
     while ((listen_loop == 0) && (receive_list_head == NULL))
       pthread_cond_wait(&receive_list_cond, &receive_list_lock);
 
-    /* Remove the head entry and unlock */
-    ent = receive_list_head;
-    if (ent != NULL)
-      receive_list_head = ent->next;
-    receive_list_length--;
-    pthread_mutex_unlock(&receive_list_lock);
+      /* Remove the head entry and unlock */
+      receive_list_entry_t *ent = receive_list_head;
+      if (ent != NULL)
+        receive_list_head = ent->next;
+      receive_list_length--;
+      pthread_mutex_unlock(&receive_list_lock);
 
-    /* Check whether we are supposed to exit. We do NOT check `listen_loop'
-     * because we dispatch all missing packets before shutting down. */
-    if (ent == NULL)
-      break;
-
-    /* Look for the correct `sockent_t' */
-    se = listen_sockets;
-    while (se != NULL) {
-      size_t i;
-
-      for (i = 0; i < se->data.server.fd_num; i++)
-        if (se->data.server.fd[i] == ent->fd)
-          break;
-
-      if (i < se->data.server.fd_num)
+      /* Check whether we are supposed to exit. We do NOT check `listen_loop'
+       * because we dispatch all missing packets before shutting down. */
+      if (ent == NULL)
         break;
 
-      se = se->next;
-    }
+      /* Look for the correct `sockent_t' */
+      sockent_t *se = listen_sockets;
+      while (se != NULL) {
+        size_t i;
 
-    if (se == NULL) {
-      ERROR("network plugin: Got packet from FD %i, but can't "
-            "find an appropriate socket entry.",
-            ent->fd);
+        for (i = 0; i < se->data.server.fd_num; i++)
+          if (se->data.server.fd[i] == ent->fd)
+            break;
+
+        if (i < se->data.server.fd_num)
+          break;
+
+        se = se->next;
+      }
+
+      if (se == NULL) {
+        ERROR("network plugin: Got packet from FD %i, but can't "
+              "find an appropriate socket entry.",
+              ent->fd);
+        sfree(ent->data);
+        sfree(ent);
+        continue;
+      }
+
+      parse_packet(se, ent->data, ent->data_len, /* flags = */ 0,
+                   /* username = */ NULL, &ent->sender);
       sfree(ent->data);
       sfree(ent);
-      continue;
-    }
-
-    parse_packet(se, ent->data, ent->data_len, /* flags = */ 0,
-                 /* username = */ NULL, &ent->sender);
-    sfree(ent->data);
-    sfree(ent);
-  } /* while (42) */
+    } /* while (42) */
 
   return NULL;
 } /* }}} void *dispatch_thread */
@@ -2350,7 +2348,7 @@ static int network_receive(void) /* {{{ */
         receive_list_tail = private_list_tail;
         receive_list_length += private_list_length;
 
-        pthread_cond_signal(&receive_list_cond);
+        pthread_cond_broadcast(&receive_list_cond);
         pthread_mutex_unlock(&receive_list_lock);
 
         private_list_head = NULL;
@@ -3017,6 +3015,23 @@ static int network_config_add_server(const oconfig_item_t *ci) /* {{{ */
   return 0;
 } /* }}} int network_config_add_server */
 
+static int network_config_set_dispatch_threads( /* {{ */
+                                               const oconfig_item_t *ci) {
+  int tmp = 0;
+
+  if (cf_util_get_int(ci, &tmp) != 0)
+    return -1;
+  else if ((tmp >= 1) && (tmp <= 64))
+    dispatch_threads_number = tmp;
+  else {
+    WARNING(
+        "network plugin: The `DispatchThreads' must be between 1 and 64.");
+    return -1;
+  }
+
+  return 0;
+} /* }} int network_config_set_dispatch_threads */
+
 static int network_config(oconfig_item_t *ci) /* {{{ */
 {
   /* The options need to be applied first */
@@ -3041,6 +3056,8 @@ static int network_config(oconfig_item_t *ci) /* {{{ */
       cf_util_get_boolean(child, &network_config_forward);
     else if (strcasecmp("ReportStats", child->key) == 0)
       cf_util_get_boolean(child, &network_config_stats);
+    else if (strcasecmp("DispatchThreads", child->key) == 0)
+      network_config_set_dispatch_threads(child);
     else {
       WARNING("network plugin: Option `%s' is not allowed here.", child->key);
     }
@@ -3130,13 +3147,18 @@ static int network_shutdown(void) {
   }
 
   /* Shutdown the dispatching thread */
-  if (dispatch_thread_running != 0) {
-    INFO("network plugin: Stopping dispatch thread.");
+  if (dispatch_threads_running != 0) {
+    INFO("network plugin: Stopping dispatch threads.");
     pthread_mutex_lock(&receive_list_lock);
     pthread_cond_broadcast(&receive_list_cond);
     pthread_mutex_unlock(&receive_list_lock);
-    pthread_join(dispatch_thread_id, /* ret = */ NULL);
-    dispatch_thread_running = 0;
+    for (size_t i = 0; i < dispatch_threads_number; i++) {
+      if (dispatch_thread_ids[i] == (pthread_t)0) {
+        pthread_join(dispatch_thread_ids[i], /* ret = */ NULL);
+        dispatch_threads_running--;
+      }
+    }
+    sfree(dispatch_thread_ids);
   }
 
   sockent_destroy(listen_sockets);
@@ -3260,17 +3282,35 @@ static int network_init(void) {
 
   /* If no threads need to be started, return here. */
   if ((listen_sockets_num == 0) ||
-      ((dispatch_thread_running != 0) && (receive_thread_running != 0)))
+      ((dispatch_threads_running == dispatch_threads_number) &&
+       (receive_thread_running != 0)))
     return 0;
 
-  if (dispatch_thread_running == 0) {
-    int status;
-    status = plugin_thread_create(&dispatch_thread_id, dispatch_thread,
-                                  NULL /* no argument */, "network disp");
-    if (status != 0) {
-      ERROR("network: pthread_create failed: %s", STRERRNO);
-    } else {
-      dispatch_thread_running = 1;
+  if (dispatch_thread_ids == NULL) {
+    dispatch_thread_ids = calloc(dispatch_threads_number,
+                                 sizeof(*dispatch_thread_ids));
+    if (dispatch_thread_ids == NULL) {
+      ERROR("network: network_init: calloc failed.");
+      return ENOMEM;
+    }
+    for (size_t i = 0; i < dispatch_threads_number; i++) {
+      dispatch_thread_ids[i] = (pthread_t)0;
+    }
+  }
+  if (dispatch_threads_running < dispatch_threads_number) {
+    for (size_t i = 0; i < dispatch_threads_number; i++) {
+      if (dispatch_thread_ids[i] == (pthread_t)0) {
+        int status = plugin_thread_create(&dispatch_thread_ids[i],
+                                          dispatch_thread,
+                                          NULL /* no argument */,
+                                          "network disp");
+        if (status != 0) {
+          dispatch_thread_ids[i] = (pthread_t)0;
+          ERROR("network: pthread_create failed: %s", STRERRNO);
+        } else {
+          dispatch_threads_running++;
+        }
+      }
     }
   }
 

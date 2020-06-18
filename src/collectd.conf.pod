@@ -6271,6 +6271,10 @@ sent octets and packets, the length of the receive queue and the number of
 values handled. When set to B<true>, the I<Network plugin> will make these
 statistics available. Defaults to B<false>.
 
+=item B<DispatchThreads> I<1-64>
+
+Number of threads to start for dispatching received packets. Defaults to I<1>.
+
 =back
 
 =head2 Plugin C<nfs>
