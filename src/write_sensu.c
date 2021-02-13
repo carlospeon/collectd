@@ -521,13 +521,6 @@ static char *sensu_value_to_json(struct sensu_host const *host, /* {{{ */
         ERROR("write_sensu plugin: Unable to alloc memory");
         return NULL;
       }
-    } else if (ds->ds[index].type == DS_TYPE_ABSOLUTE) {
-      res = my_asprintf(&value_str, "%" PRIu64, vl->values[index].absolute);
-      if (res == -1) {
-        free(ret_str);
-        ERROR("write_sensu plugin: Unable to alloc memory");
-        return NULL;
-      }
     } else {
       res = my_asprintf(&value_str, "%" PRIu64,
                         (uint64_t)vl->values[index].counter);
@@ -938,9 +931,9 @@ static int sensu_write(const data_set_t *ds, /* {{{ */
   memset(statuses, 0, vl->values_len * sizeof(*statuses));
 
   if (host->store_rates) {
-    rates = uc_get_rate(ds, vl);
+    rates = uc_get_rate_vl(ds, vl);
     if (rates == NULL) {
-      ERROR("write_sensu plugin: uc_get_rate failed.");
+      ERROR("write_sensu plugin: uc_get_rate_vl failed.");
       pthread_mutex_unlock(&host->lock);
       return -1;
     }

@@ -35,6 +35,8 @@ CLEANFILES = \
 	prometheus.pb-c.h \
 	src/pinba.pb-c.c \
 	src/pinba.pb-c.h \
+	types.grpc.pb.cc \
+	types.grpc.pb.h \
 	types.pb.cc \
 	types.pb.h
 
@@ -132,15 +134,16 @@ noinst_LTLIBRARIES = \
 	libcmds.la \
 	libcommon.la \
 	libformat_graphite.la \
-	libformat_json.la \
 	libheap.la \
 	libignorelist.la \
 	liblatency.la \
 	libllist.la \
 	liblookup.la \
 	libmetadata.la \
+	libmetric.la \
 	libmount.la \
-	liboconfig.la
+	liboconfig.la \
+	libstrbuf.la
 
 
 check_LTLIBRARIES = \
@@ -151,12 +154,14 @@ check_PROGRAMS = \
 	test_common \
 	test_format_graphite \
 	test_meta_data \
+	test_metric \
 	test_utils_avltree \
 	test_utils_cmds \
 	test_utils_heap \
 	test_utils_latency \
 	test_utils_message_parser \
 	test_utils_mount \
+	test_utils_strbuf \
 	test_utils_subst \
 	test_utils_time \
 	test_utils_vl_lookup \
@@ -238,10 +243,10 @@ collectd_SOURCES = \
 	src/daemon/filter_chain.h \
 	src/daemon/globals.c \
 	src/daemon/globals.h \
-	src/utils/metadata/meta_data.c \
-	src/utils/metadata/meta_data.h \
 	src/daemon/plugin.c \
 	src/daemon/plugin.h \
+	src/daemon/types_list.c \
+	src/daemon/types_list.h \
 	src/daemon/utils_cache.c \
 	src/daemon/utils_cache.h \
 	src/daemon/utils_complain.c \
@@ -250,13 +255,10 @@ collectd_SOURCES = \
 	src/daemon/utils_random.h \
 	src/daemon/utils_subst.c \
 	src/daemon/utils_subst.h \
-	src/daemon/utils_time.c \
-	src/daemon/utils_time.h \
-	src/daemon/types_list.c \
-	src/daemon/types_list.h \
 	src/daemon/utils_threshold.c \
-	src/daemon/utils_threshold.h
-
+	src/daemon/utils_threshold.h \
+	src/daemon/utils_time.c \
+	src/daemon/utils_time.h
 
 collectd_CFLAGS = $(AM_CFLAGS)
 collectd_CPPFLAGS = $(AM_CPPFLAGS)
@@ -266,6 +268,8 @@ collectd_LDADD = \
 	libcommon.la \
 	libheap.la \
 	libllist.la \
+	libmetadata.la \
+	libmetric.la \
 	liboconfig.la \
 	-lm \
 	$(COMMON_LIBS) \
@@ -344,12 +348,17 @@ endif
 test_common_SOURCES = \
 	src/utils/common/common_test.c \
 	src/testing.h
-test_common_LDADD = libplugin_mock.la
+test_common_LDADD = libmetric.la libplugin_mock.la
 
 test_meta_data_SOURCES = \
 	src/utils/metadata/meta_data_test.c \
 	src/testing.h
 test_meta_data_LDADD = libmetadata.la libplugin_mock.la
+
+test_metric_SOURCES = \
+	src/daemon/metric_test.c \
+	src/testing.h
+test_metric_LDADD = libmetric.la libplugin_mock.la
 
 test_utils_avltree_SOURCES = \
 	src/utils/avltree/avltree_test.c \
@@ -397,7 +406,7 @@ libavltree_la_SOURCES = \
 libcommon_la_SOURCES = \
 	src/utils/common/common.c \
 	src/utils/common/common.h
-libcommon_la_LIBADD = $(COMMON_LIBS)
+libcommon_la_LIBADD = libmetric.la libstrbuf.la $(COMMON_LIBS)
 
 libheap_la_SOURCES = \
 	src/utils/heap/heap.c \
@@ -415,6 +424,11 @@ libmetadata_la_SOURCES = \
 	src/utils/metadata/meta_data.c \
 	src/utils/metadata/meta_data.h
 
+libmetric_la_SOURCES = \
+		       src/daemon/metric.c \
+		       src/daemon/metric.h
+libmetric_la_LIBADD = libmetadata.la $(COMMON_LIBS)
+
 libplugin_mock_la_SOURCES = \
 	src/daemon/plugin_mock.c \
 	src/daemon/utils_cache_mock.c \
@@ -424,11 +438,12 @@ libplugin_mock_la_SOURCES = \
 	src/daemon/utils_time.h
 
 libplugin_mock_la_CPPFLAGS = $(AM_CPPFLAGS) -DMOCK_TIME
-libplugin_mock_la_LIBADD = libcommon.la libignorelist.la $(COMMON_LIBS)
+libplugin_mock_la_LIBADD = libcommon.la libignorelist.la libmetadata.la $(COMMON_LIBS)
 
 libformat_graphite_la_SOURCES = \
 	src/utils/format_graphite/format_graphite.c \
 	src/utils/format_graphite/format_graphite.h
+libformat_graphite_la_LIBADD = $(COMMON_LIBS)
 
 test_format_graphite_SOURCES = \
 	src/utils/format_graphite/format_graphite_test.c \
@@ -436,16 +451,19 @@ test_format_graphite_SOURCES = \
 test_format_graphite_LDADD = \
 	libformat_graphite.la \
 	libmetadata.la \
+	libmetric.la \
 	libplugin_mock.la \
+	libstrbuf.la \
 	-lm
 
+if BUILD_WITH_LIBYAJL
+noinst_LTLIBRARIES += libformat_json.la
 libformat_json_la_SOURCES = \
 	src/utils/format_json/format_json.c \
 	src/utils/format_json/format_json.h
 libformat_json_la_CPPFLAGS  = $(AM_CPPFLAGS)
 libformat_json_la_LDFLAGS   = $(AM_LDFLAGS)
-libformat_json_la_LIBADD    =
-if BUILD_WITH_LIBYAJL
+libformat_json_la_LIBADD    = libmetric.la
 libformat_json_la_CPPFLAGS += $(BUILD_WITH_LIBYAJL_CPPFLAGS)
 libformat_json_la_LDFLAGS  += $(BUILD_WITH_LIBYAJL_LDFLAGS)
 libformat_json_la_LIBADD   += $(BUILD_WITH_LIBYAJL_LIBS)
@@ -498,22 +516,22 @@ libcmds_la_SOURCES = \
 	src/utils/cmds/getval.h \
 	src/utils/cmds/listval.c \
 	src/utils/cmds/listval.h \
+	src/utils/cmds/putmetric.c \
+	src/utils/cmds/putmetric.h \
 	src/utils/cmds/putnotif.c \
 	src/utils/cmds/putnotif.h \
 	src/utils/cmds/putval.c \
 	src/utils/cmds/putval.h \
 	src/utils/cmds/parse_option.c \
 	src/utils/cmds/parse_option.h
-libcmds_la_LIBADD = \
-	libcommon.la \
-	libmetadata.la \
-	-lm
+libcmds_la_LIBADD = -lm
 
 test_utils_cmds_SOURCES = \
 	src/utils/cmds/cmds_test.c \
 	src/testing.h
 test_utils_cmds_LDADD = \
 	libcmds.la \
+	libmetric.la \
 	libplugin_mock.la
 
 liblookup_la_SOURCES = \
@@ -545,6 +563,14 @@ if BUILD_WITH_LIBKSTAT
 test_utils_mount_LDADD += -lkstat
 endif
 
+libstrbuf_la_SOURCES = \
+		       src/utils/strbuf/strbuf.c \
+		       src/utils/strbuf/strbuf.h
+
+test_utils_strbuf_SOURCES = \
+			    src/utils/strbuf/strbuf_test.c \
+			    src/testing.h
+test_utils_strbuf_LDADD = libstrbuf.la
 
 libcollectdclient_la_SOURCES = \
 	src/libcollectdclient/client.c \
@@ -651,6 +677,7 @@ test_format_stackdriver_SOURCES = \
 	src/testing.h
 test_format_stackdriver_LDADD = \
 	libformat_stackdriver.la \
+	libmetric.la \
 	libplugin_mock.la \
 	-lm
 endif
@@ -722,19 +749,6 @@ aquaero_la_SOURCES = src/aquaero.c
 aquaero_la_CFLAGS = $(AM_CFLAGS) $(BUILD_WITH_LIBAQUAERO5_CFLAGS)
 aquaero_la_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBAQUAERO5_LDFLAGS)
 aquaero_la_LIBADD = -laquaero5
-endif
-
-if BUILD_PLUGIN_ASCENT
-pkglib_LTLIBRARIES += ascent.la
-ascent_la_SOURCES = src/ascent.c
-ascent_la_CFLAGS = \
-	$(AM_CFLAGS) \
-	$(BUILD_WITH_LIBCURL_CFLAGS) \
-	$(BUILD_WITH_LIBXML2_CFLAGS)
-ascent_la_LDFLAGS = $(PLUGIN_LDFLAGS)
-ascent_la_LIBADD = \
-	$(BUILD_WITH_LIBCURL_LIBS) \
-	$(BUILD_WITH_LIBXML2_LIBS)
 endif
 
 if BUILD_PLUGIN_BAROMETER
@@ -1131,6 +1145,13 @@ hugepages_la_SOURCES = src/hugepages.c
 hugepages_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 endif
 
+if BUILD_PLUGIN_INFINIBAND
+pkglib_LTLIBRARIES += infiniband.la
+infiniband_la_SOURCES = src/infiniband.c
+infiniband_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+infiniband_la_LIBADD = libignorelist.la
+endif
+
 if BUILD_PLUGIN_INTEL_PMU
 pkglib_LTLIBRARIES += intel_pmu.la
 intel_pmu_la_SOURCES = \
@@ -1160,9 +1181,9 @@ test_plugin_intel_rdt_SOURCES = \
 	src/utils/proc_pids/proc_pids.c \
 	src/daemon/configfile.c \
 	src/daemon/types_list.c
-test_plugin_intel_rdt_CPPFLAGS = $(AM_CPPFLAGS)
-test_plugin_intel_rdt_LDFLAGS = $(PLUGIN_LDFLAGS)
-test_plugin_intel_rdt_LDADD = liboconfig.la libplugin_mock.la
+test_plugin_intel_rdt_CPPFLAGS = $(AM_CPPFLAGS) $(BUILD_WITH_LIBPQOS_CPPFLAGS)
+test_plugin_intel_rdt_LDFLAGS = $(AM_LDFLAGS) $(BUILD_WITH_LIBPQOS_LDFLAGS)
+test_plugin_intel_rdt_LDADD = liboconfig.la libplugin_mock.la $(BUILD_WITH_LIBPQOS_LIBS)
 check_PROGRAMS += test_plugin_intel_rdt
 TESTS += test_plugin_intel_rdt
 
@@ -1491,6 +1512,19 @@ netlink_la_SOURCES = src/netlink.c
 netlink_la_CFLAGS = $(AM_CFLAGS) $(BUILD_WITH_LIBMNL_CFLAGS)
 netlink_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 netlink_la_LIBADD = $(BUILD_WITH_LIBMNL_LIBS)
+
+test_plugin_netlink_SOURCES = \
+	src/netlink_test.c \
+	src/daemon/configfile.c \
+	src/daemon/types_list.c
+test_plugin_netlink_CFLAGS = $(AM_CFLAGS) $(BUILD_WITH_LIBMNL_CFLAGS)
+test_plugin_netlink_LDFLAGS = $(PLUGIN_LDFLAGS)
+test_plugin_netlink_LDADD = \
+	liboconfig.la \
+	libplugin_mock.la \
+	$(BUILD_WITH_LIBMNL_LIBS)
+check_PROGRAMS += test_plugin_netlink
+TESTS += test_plugin_netlink
 endif
 
 if BUILD_PLUGIN_NETWORK
@@ -1672,7 +1706,10 @@ test_plugin_pcie_errors_SOURCES = \
 	src/daemon/types_list.c
 test_plugin_pcie_errors_CPPFLAGS = $(AM_CPPFLAGS)
 test_plugin_pcie_errors_LDFLAGS = $(PLUGIN_LDFLAGS)
-test_plugin_pcie_errors_LDADD = liboconfig.la libplugin_mock.la
+test_plugin_pcie_errors_LDADD = \
+	libllist.la \
+	liboconfig.la \
+	libplugin_mock.la
 check_PROGRAMS += test_plugin_pcie_errors
 TESTS += test_plugin_pcie_errors
 endif
@@ -1796,12 +1833,11 @@ redfish_la_LIBADD = $(BUILD_WITH_LIBREDFISH_LIBS) -lredfish
 
 test_plugin_redfish_SOURCES = src/redfish_test.c \
                               src/utils/avltree/avltree.c \
-                              src/daemon/utils_llist.c \
                               src/daemon/configfile.c \
                               src/daemon/types_list.c
 test_plugin_redfish_CPPFLAGS = $(AM_CPPFLAGS) $(BUILD_WITH_LIBREDFISH_CPPFLAGS)
 test_plugin_redfish_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBREDFISH_LDFLAGS)
-test_plugin_redfish_LDADD = liboconfig.la libplugin_mock.la \
+test_plugin_redfish_LDADD = liboconfig.la libplugin_mock.la libllist.la \
                             $(BUILD_WITH_LIBREDFISH_LIBS) -lredfish -ljansson
 check_PROGRAMS += test_plugin_redfish
 TESTS += test_plugin_redfish
@@ -1878,10 +1914,20 @@ endif
 if BUILD_PLUGIN_SMART
 if BUILD_WITH_LIBUDEV
 pkglib_LTLIBRARIES += smart.la
-smart_la_SOURCES = src/smart.c
+smart_la_SOURCES = \
+    src/smart.c \
+    src/nvme.h \
+    src/intel-nvme.h
 smart_la_CPPFLAGS = $(AM_CPPFLAGS) $(BUILD_WITH_LIBATASMART_CPPFLAGS) $(BUILD_WITH_LIBUDEV_CPPFLAGS)
 smart_la_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBATASMART_LDFLAGS) $(BUILD_WITH_LIBUDEV_LDFLAGS)
 smart_la_LIBADD = libignorelist.la $(BUILD_WITH_LIBATASMART_LIBS) $(BUILD_WITH_LIBUDEV_LIBS)
+
+test_plugin_smart_SOURCES = src/smart_test.c
+test_plugin_smart_CPPFLAGS = $(AM_CPPFLAGS) $(BUILD_WITH_LIBATASMART_CPPFLAGS) $(BUILD_WITH_LIBUDEV_CPPFLAGS)
+test_plugin_smart_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBATASMART_LDFLAGS) $(BUILD_WITH_LIBUDEV_LDFLAGS)
+test_plugin_smart_LDADD = libplugin_mock.la $(BUILD_WITH_LIBATASMART_LIBS) $(BUILD_WITH_LIBUDEV_LIBS)
+check_PROGRAMS += test_plugin_smart
+TESTS += test_plugin_smart
 endif
 endif
 
@@ -1902,14 +1948,13 @@ snmp_agent_la_LIBADD = $(BUILD_WITH_LIBNETSNMPAGENT_LIBS)
 
 test_plugin_snmp_agent_SOURCES = src/snmp_agent_test.c \
                                  src/utils/avltree/avltree.c \
-                                 src/daemon/utils_llist.c \
                                  src/daemon/configfile.c \
                                  src/daemon/types_list.c
 test_plugin_snmp_agent_CPPFLAGS = $(AM_CPPFLAGS) \
 	$(BUILD_WITH_LIBNETSNMPAGENT_CPPFLAGS)
 test_plugin_snmp_agent_LDFLAGS = $(PLUGIN_LDFLAGS) \
 	$(BUILD_WITH_LIBNETSNMPAGENT_LDFLAGS)
-test_plugin_snmp_agent_LDADD = liboconfig.la libplugin_mock.la \
+test_plugin_snmp_agent_LDADD = liboconfig.la libplugin_mock.la libllist.la \
 	$(BUILD_WITH_LIBNETSNMPAGENT_LIBS) $(BUILD_WITH_LIBNETSNMP_LIBS)
 
 check_PROGRAMS += test_plugin_snmp_agent
@@ -2186,7 +2231,7 @@ if BUILD_PLUGIN_WRITE_GRAPHITE
 pkglib_LTLIBRARIES += write_graphite.la
 write_graphite_la_SOURCES = src/write_graphite.c
 write_graphite_la_LDFLAGS = $(PLUGIN_LDFLAGS)
-write_graphite_la_LIBADD = libformat_graphite.la
+write_graphite_la_LIBADD = libformat_graphite.la libstrbuf.la
 endif
 
 if BUILD_PLUGIN_WRITE_HTTP
@@ -2199,7 +2244,7 @@ write_http_la_SOURCES = \
 	src/utils/format_kairosdb/format_kairosdb.h
 write_http_la_CFLAGS = $(AM_CFLAGS) $(BUILD_WITH_LIBCURL_CFLAGS)
 write_http_la_LDFLAGS = $(PLUGIN_LDFLAGS)
-write_http_la_LIBADD = libformat_json.la $(BUILD_WITH_LIBCURL_LIBS)
+write_http_la_LIBADD = libcmds.la libformat_json.la $(BUILD_WITH_LIBCURL_LIBS)
 endif
 
 if BUILD_PLUGIN_WRITE_INFLUXDB_UDP
@@ -2303,14 +2348,6 @@ xencpu_la_LDFLAGS = $(PLUGIN_LDFLAGS) $(LIBXENCTL_LDFLAGS)
 xencpu_la_LIBADD = -lxenctrl
 endif
 
-if BUILD_PLUGIN_XMMS
-pkglib_LTLIBRARIES += xmms.la
-xmms_la_SOURCES = src/xmms.c
-xmms_la_CFLAGS = $(AM_CFLAGS) $(BUILD_WITH_LIBXMMS_CFLAGS)
-xmms_la_LDFLAGS = $(PLUGIN_LDFLAGS)
-xmms_la_LIBADD = $(BUILD_WITH_LIBXMMS_LIBS)
-endif
-
 if BUILD_PLUGIN_ZFS_ARC
 pkglib_LTLIBRARIES += zfs_arc.la
 zfs_arc_la_SOURCES = src/zfs_arc.c
@@ -2373,9 +2410,9 @@ endif
 
 if HAVE_PROTOC3
 if HAVE_GRPC_CPP
-BUILT_SOURCES += collectd.grpc.pb.cc collectd.pb.cc types.pb.cc
+BUILT_SOURCES += collectd.grpc.pb.cc types.grpc.pb.cc collectd.pb.cc types.pb.cc
 
-collectd.grpc.pb.cc: $(srcdir)/proto/collectd.proto $(srcdir)/proto/types.proto
+collectd.grpc.pb.cc types.grpc.pb.cc: $(srcdir)/proto/collectd.proto $(srcdir)/proto/types.proto
 	$(V_PROTOC)$(PROTOC) -I$(srcdir)/proto \
 		--grpc_out=$(builddir) --plugin=protoc-gen-grpc=$(GRPC_CPP_PLUGIN) \
 	$(srcdir)/proto/collectd.proto $(srcdir)/proto/types.proto
@@ -2489,4 +2526,3 @@ generic-jmx.jar: $(JAVA_TIMESTAMP_FILE)
 
 jar_DATA = collectd-api.jar generic-jmx.jar
 endif
-

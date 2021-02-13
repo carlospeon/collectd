@@ -346,10 +346,10 @@ static int ws_format_values(char *ret, size_t ret_len, int ds_num,
     BUFFER_ADD(GAUGE_FORMAT, vl->values[ds_num].gauge);
   else if (store_rates) {
     if (rates == NULL)
-      rates = uc_get_rate(ds, vl);
+      rates = uc_get_rate_vl(ds, vl);
     if (rates == NULL) {
       WARNING("format_values: "
-              "uc_get_rate failed.");
+              "uc_get_rate_vl failed.");
       return -1;
     }
     BUFFER_ADD(GAUGE_FORMAT, rates[ds_num]);
@@ -357,8 +357,6 @@ static int ws_format_values(char *ret, size_t ret_len, int ds_num,
     BUFFER_ADD("%" PRIu64, (uint64_t)vl->values[ds_num].counter);
   else if (ds->ds[ds_num].type == DS_TYPE_DERIVE)
     BUFFER_ADD("%" PRIi64, vl->values[ds_num].derive);
-  else if (ds->ds[ds_num].type == DS_TYPE_ABSOLUTE)
-    BUFFER_ADD("%" PRIu64, vl->values[ds_num].absolute);
   else {
     ERROR("format_values plugin: Unknown data source type: %i",
           ds->ds[ds_num].type);

@@ -114,6 +114,7 @@ AM_CONDITIONAL([BUILD_DARWIN], [test "x$ac_system" = "xDarwin"])
 AM_CONDITIONAL([BUILD_FREEBSD], [test "x$ac_system" = "xFreeBSD"])
 AM_CONDITIONAL([BUILD_LINUX], [test "x$ac_system" = "xLinux"])
 AM_CONDITIONAL([BUILD_OPENBSD], [test "x$ac_system" = "xOpenBSD"])
+AM_CONDITIONAL([BUILD_NETBSD], [test "x$ac_system" = "xNetBSD"])
 AM_CONDITIONAL([BUILD_SOLARIS], [test "x$ac_system" = "xSolaris"])
 AM_CONDITIONAL([BUILD_WIN32], [test "x$ac_system" = "xWindows"])
 
@@ -920,6 +921,7 @@ AC_CHECK_FUNCS([host_statistics], [have_host_statistics="yes"], [have_host_stati
 AC_CHECK_FUNCS([processor_info], [have_processor_info="yes"], [have_processor_info="no"])
 AC_CHECK_FUNCS([statfs], [have_statfs="yes"], [have_statfs="no"])
 AC_CHECK_FUNCS([statvfs], [have_statvfs="yes"], [have_statvfs="no"])
+AC_CHECK_FUNCS([strnlen], [have_strnlen="yes"], [have_strnlen="no"])
 AC_CHECK_FUNCS([sysctl], [have_sysctl="yes"], [have_sysctl="no"])
 AC_CHECK_FUNCS([sysctlbyname], [have_sysctlbyname="yes"], [have_sysctlbyname="no"])
 AC_CHECK_FUNCS([syslog], [have_syslog="yes"], [have_syslog="no"])
@@ -3718,6 +3720,24 @@ if test "x$with_libmnl" = "xyes"; then
     [[#include <linux/if_link.h>]]
   )
 
+  AC_CHECK_DECLS([IFLA_VF_STATS_RX_DROPPED],
+    [AC_DEFINE(HAVE_IFLA_VF_STATS_RX_DROPPED, 1, [Define if IFLA_VF_STATS_RX_DROPPED exists.])],
+    [],
+    [[#include <linux/if_link.h>]]
+  )
+
+  AC_CHECK_DECLS([IFLA_VF_STATS_TX_DROPPED],
+    [AC_DEFINE(HAVE_IFLA_VF_STATS_TX_DROPPED, 1, [Define if IFLA_VF_STATS_TX_DROPPED exists.])],
+    [],
+    [[#include <linux/if_link.h>]]
+  )
+
+  AC_CHECK_DECLS([IFLA_VF_STATS],
+    [AC_DEFINE(HAVE_IFLA_VF_STATS, 1, [Define if IFLA_VF_STATS exists.])],
+    [],
+    [[#include <linux/if_link.h>]]
+  )
+
   AC_CHECK_LIB([mnl], [mnl_nlmsg_get_payload],
     [with_libmnl="yes"],
     [with_libmnl="no (symbol 'mnl_nlmsg_get_payload' not found)"],
@@ -5855,72 +5875,6 @@ AC_SUBST([LIBXENCTL_CPPFLAGS])
 AC_SUBST([LIBXENCTL_LDFLAGS])
 # }}}
 
-# --with-libxmms {{{
-with_xmms_config="xmms-config"
-AC_ARG_WITH([libxmms],
-  [AS_HELP_STRING([--with-libxmms@<:@=PREFIX@:>@], [Path to libxmms.])],
-  [
-    if test "x$withval" = "xno" || test "x$withval" = "xyes"; then
-      with_libxmms="$withval"
-    else
-      if test -f "$withval" && test -x "$withval"; then
-        with_xmms_config="$withval"
-      else if test -x "$withval/bin/xmms-config"; then
-        with_xmms_config="$withval/bin/xmms-config"
-      fi; fi
-      with_libxmms="yes"
-    fi
-  ],
-  [with_libxmms="yes"]
-)
-
-if test "x$with_libxmms" = "xyes"; then
-  with_xmms_cflags=`$with_xmms_config --cflags 2>/dev/null`
-  if test $? -ne 0; then
-    with_libxmms="no"
-  fi
-fi
-
-if test "x$with_libxmms" = "xyes"; then
-  with_xmms_libs=`$with_xmms_config --libs 2>/dev/null`
-  if test $? -ne 0; then
-    with_libxmms="no"
-  fi
-fi
-
-if test "x$with_libxmms" = "xyes"; then
-  SAVE_CPPFLAGS="$CPPFLAGS"
-  CPPFLAGS="$with_xmms_cflags"
-
-  AC_CHECK_HEADER([xmmsctrl.h],
-    [with_libxmms="yes"],
-    [with_libxmms="no"],
-  )
-
-  CPPFLAGS="$SAVE_CPPFLAGS"
-fi
-
-if test "x$with_libxmms" = "xyes"; then
-  SAVE_LIBS="$LIBS"
-  LIBS="$with_xmms_libs"
-
-  AC_CHECK_LIB([xmms], [xmms_remote_get_info],
-    [with_libxmss="yes"],
-    [with_libxmms="no"],
-    [$with_xmms_libs]
-
-  )
-
-  LIBS="$SAVE_LIBS"
-fi
-
-BUILD_WITH_LIBXMMS_CFLAGS="$with_xmms_cflags"
-BUILD_WITH_LIBXMMS_LIBS="$with_xmms_libs"
-
-AC_SUBST([BUILD_WITH_LIBXMMS_CFLAGS])
-AC_SUBST([BUILD_WITH_LIBXMMS_LIBS])
-# }}}
-
 # --with-libyajl {{{
 AC_ARG_WITH([libyajl],
   [AS_HELP_STRING([--with-libyajl@<:@=PREFIX@:>@], [Path to libyajl.])],
@@ -6565,7 +6519,6 @@ AC_COLLECTD([werror],    [disable], [feature], [building with -Werror])
 dependency_warning="no"
 dependency_error="no"
 
-plugin_ascent="no"
 plugin_barometer="no"
 plugin_battery="no"
 plugin_bind="no"
@@ -6595,6 +6548,7 @@ plugin_gps="no"
 plugin_gpu_nvidia="no"
 plugin_grpc="no"
 plugin_hugepages="no"
+plugin_infiniband="no"
 plugin_intel_pmu="no"
 plugin_intel_rdt="no"
 plugin_interface="no"
@@ -6609,6 +6563,7 @@ plugin_mcelog="no"
 plugin_mdevents="no"
 plugin_memory="no"
 plugin_multimeter="no"
+plugin_netstat_udp="no"
 plugin_nfs="no"
 plugin_numa="no"
 plugin_ovs_events="no"
@@ -6637,6 +6592,7 @@ plugin_virt="no"
 plugin_vmem="no"
 plugin_vserver="no"
 plugin_wireless="no"
+plugin_write_log="no"
 plugin_write_prometheus="no"
 plugin_write_stackdriver="no"
 plugin_xencpu="no"
@@ -6659,6 +6615,7 @@ if test "x$ac_system" = "xLinux"; then
   plugin_fhcount="yes"
   plugin_fscache="yes"
   plugin_hugepages="yes"
+  plugin_infiniband="yes"
   plugin_interface="yes"
   plugin_ipc="yes"
   plugin_irq="yes"
@@ -6723,6 +6680,7 @@ if test "x$ac_system" = "xNetBSD"; then
   plugin_irq="yes"
   plugin_nfs="yes"
   plugin_processes="yes"
+  plugin_netstat_udp="yes"
 fi
 
 # Mac OS X devices
@@ -6796,13 +6754,6 @@ if test "x$with_libstatgrab" = "xyes"; then
   plugin_users="yes"
 fi
 
-if test "x$with_libcurl" = "xyes" && test "x$with_libxml2" = "xyes"; then
-  plugin_ascent="yes"
-  if test "x$have_strptime" = "xyes"; then
-    plugin_bind="yes"
-  fi
-fi
-
 if test "x$with_libopenipmipthread" = "xyes"; then
   plugin_ipmi="yes"
 fi
@@ -6817,11 +6768,16 @@ fi
 
 if test "x$with_libcurl" = "xyes" && test "x$with_libxml2" = "xyes"; then
   plugin_curl_xml="yes"
+  if test "x$have_strptime" = "xyes"; then
+    plugin_bind="yes"
+  fi
 fi
 
 if test "x$with_libyajl" = "xyes"; then
   plugin_ceph="yes"
+  plugin_log_logstash="yes"
   plugin_sysevent="yes"
+  plugin_write_log="yes"
 fi
 
 if test "x$have_processor_info" = "xyes"; then
@@ -6899,10 +6855,6 @@ fi
 
 if test "x$have_getloadavg" = "xyes"; then
   plugin_load="yes"
-fi
-
-if test "x$with_libyajl" = "xyes"; then
-  plugin_log_logstash="yes"
 fi
 
 if test "x$with_libperl" = "xyes" && test "x$c_cv_have_perl_ithreads" = "xyes"; then
@@ -7015,7 +6967,6 @@ AC_PLUGIN([apache],              [$with_libcurl],             [Apache httpd stat
 AC_PLUGIN([apcups],              [yes],                       [Statistics of UPSes by APC])
 AC_PLUGIN([apple_sensors],       [$with_libiokit],            [Apple hardware sensors])
 AC_PLUGIN([aquaero],             [$with_libaquaero5],         [Aquaero hardware sensors])
-AC_PLUGIN([ascent],              [$plugin_ascent],            [AscentEmu player statistics])
 AC_PLUGIN([barometer],           [$plugin_barometer],         [Barometer sensor on I2C])
 AC_PLUGIN([battery],             [$plugin_battery],           [Battery statistics])
 AC_PLUGIN([bind],                [$plugin_bind],              [ISC Bind nameserver statistics])
@@ -7057,6 +7008,7 @@ AC_PLUGIN([gpu_nvidia],          [$with_cuda],                [NVIDIA GPU plugin
 AC_PLUGIN([grpc],                [$plugin_grpc],              [gRPC plugin])
 AC_PLUGIN([hddtemp],             [yes],                       [Query hddtempd])
 AC_PLUGIN([hugepages],           [$plugin_hugepages],         [Hugepages statistics])
+AC_PLUGIN([infiniband],          [$plugin_infiniband],        [Infiniband statistics])
 AC_PLUGIN([intel_pmu],           [$with_libjevents],          [Intel performance monitor plugin])
 AC_PLUGIN([intel_rdt],           [$with_libpqos],             [Intel RDT monitor plugin])
 AC_PLUGIN([interface],           [$plugin_interface],         [Interface traffic statistics])
@@ -7093,6 +7045,7 @@ AC_PLUGIN([multimeter],          [$plugin_multimeter],        [Read multimeter v
 AC_PLUGIN([mysql],               [$with_libmysql],            [MySQL statistics])
 AC_PLUGIN([netapp],              [$with_libnetapp],           [NetApp plugin])
 AC_PLUGIN([netlink],             [$with_libmnl],              [Enhanced Linux network statistics])
+AC_PLUGIN([netstat_udp],         [$plugin_netstat_udp],       [UDP network statistics])
 AC_PLUGIN([network],             [yes],                       [Network communication plugin])
 AC_PLUGIN([nfs],                 [$plugin_nfs],               [NFS statistics])
 AC_PLUGIN([nginx],               [$with_libcurl],             [nginx statistics])
@@ -7168,7 +7121,7 @@ AC_PLUGIN([write_graphite],      [yes],                       [Graphite / Carbon
 AC_PLUGIN([write_http],          [$with_libcurl],             [HTTP output plugin])
 AC_PLUGIN([write_influxdb_udp],  [yes],                       [Influxdb udp output plugin])
 AC_PLUGIN([write_kafka],         [$with_librdkafka],          [Kafka output plugin])
-AC_PLUGIN([write_log],           [yes],                       [Log output plugin])
+AC_PLUGIN([write_log],           [$plugin_write_log],         [Log output plugin])
 AC_PLUGIN([write_mongodb],       [$with_libmongoc],           [MongoDB output plugin])
 AC_PLUGIN([write_prometheus],    [$plugin_write_prometheus],  [Prometheus write plugin])
 AC_PLUGIN([write_redis],         [$with_libhiredis],          [Redis output plugin])
@@ -7178,7 +7131,6 @@ AC_PLUGIN([write_stackdriver],   [$plugin_write_stackdriver], [Google Stackdrive
 AC_PLUGIN([write_syslog],        [yes],                       [Syslog output plugin])
 AC_PLUGIN([write_tsdb],          [yes],                       [TSDB output plugin])
 AC_PLUGIN([xencpu],              [$plugin_xencpu],            [Xen Host CPU usage])
-AC_PLUGIN([xmms],                [$with_libxmms],             [XMMS statistics])
 AC_PLUGIN([zfs_arc],             [$plugin_zfs_arc],           [ZFS ARC statistics])
 AC_PLUGIN([zone],                [$plugin_zone],              [Solaris container statistics])
 AC_PLUGIN([zookeeper],           [yes],                       [Zookeeper statistics])
@@ -7439,7 +7391,6 @@ AC_MSG_RESULT([    libvarnish  . . . . . $with_libvarnish])
 AC_MSG_RESULT([    libvirt . . . . . . . $with_libvirt])
 AC_MSG_RESULT([    libxenctrl  . . . . . $with_libxenctrl])
 AC_MSG_RESULT([    libxml2 . . . . . . . $with_libxml2])
-AC_MSG_RESULT([    libxmms . . . . . . . $with_libxmms])
 AC_MSG_RESULT([    libyajl . . . . . . . $with_libyajl])
 AC_MSG_RESULT([    oracle  . . . . . . . $with_oracle])
 AC_MSG_RESULT([    protobuf-c  . . . . . $have_protoc_c])
@@ -7460,7 +7411,6 @@ AC_MSG_RESULT([    apache  . . . . . . . $enable_apache])
 AC_MSG_RESULT([    apcups  . . . . . . . $enable_apcups])
 AC_MSG_RESULT([    apple_sensors . . . . $enable_apple_sensors])
 AC_MSG_RESULT([    aquaero . . . . . . . $enable_aquaero])
-AC_MSG_RESULT([    ascent  . . . . . . . $enable_ascent])
 AC_MSG_RESULT([    barometer . . . . . . $enable_barometer])
 AC_MSG_RESULT([    battery . . . . . . . $enable_battery])
 AC_MSG_RESULT([    bind  . . . . . . . . $enable_bind])
@@ -7502,6 +7452,7 @@ AC_MSG_RESULT([    gpu_nvidia  . . . . . $enable_gpu_nvidia])
 AC_MSG_RESULT([    grpc  . . . . . . . . $enable_grpc])
 AC_MSG_RESULT([    hddtemp . . . . . . . $enable_hddtemp])
 AC_MSG_RESULT([    hugepages . . . . . . $enable_hugepages])
+AC_MSG_RESULT([    infiniband  . . . . . $enable_infiniband])
 AC_MSG_RESULT([    intel_pmu . . . . . . $enable_intel_pmu])
 AC_MSG_RESULT([    intel_rdt . . . . . . $enable_intel_rdt])
 AC_MSG_RESULT([    interface . . . . . . $enable_interface])
@@ -7538,6 +7489,7 @@ AC_MSG_RESULT([    multimeter  . . . . . $enable_multimeter])
 AC_MSG_RESULT([    mysql . . . . . . . . $enable_mysql])
 AC_MSG_RESULT([    netapp  . . . . . . . $enable_netapp])
 AC_MSG_RESULT([    netlink . . . . . . . $enable_netlink])
+AC_MSG_RESULT([    netstat_udp . . . . . $enable_netstat_udp])
 AC_MSG_RESULT([    network . . . . . . . $enable_network])
 AC_MSG_RESULT([    nfs . . . . . . . . . $enable_nfs])
 AC_MSG_RESULT([    nginx . . . . . . . . $enable_nginx])
@@ -7622,7 +7574,6 @@ AC_MSG_RESULT([    write_stackdriver . . $enable_write_stackdriver])
 AC_MSG_RESULT([    write_syslog . .  . . $enable_write_syslog])
 AC_MSG_RESULT([    write_tsdb  . . . . . $enable_write_tsdb])
 AC_MSG_RESULT([    xencpu  . . . . . . . $enable_xencpu])
-AC_MSG_RESULT([    xmms  . . . . . . . . $enable_xmms])
 AC_MSG_RESULT([    zfs_arc . . . . . . . $enable_zfs_arc])
 AC_MSG_RESULT([    zone  . . . . . . . . $enable_zone])
 AC_MSG_RESULT([    zookeeper . . . . . . $enable_zookeeper])

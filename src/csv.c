@@ -55,8 +55,7 @@ static int value_list_to_string(char *buffer, int buffer_len,
   for (size_t i = 0; i < ds->ds_num; i++) {
     if ((ds->ds[i].type != DS_TYPE_COUNTER) &&
         (ds->ds[i].type != DS_TYPE_GAUGE) &&
-        (ds->ds[i].type != DS_TYPE_DERIVE) &&
-        (ds->ds[i].type != DS_TYPE_ABSOLUTE)) {
+        (ds->ds[i].type != DS_TYPE_DERIVE)) {
       sfree(rates);
       return -1;
     }
@@ -66,10 +65,10 @@ static int value_list_to_string(char *buffer, int buffer_len,
                         vl->values[i].gauge);
     } else if (store_rates != 0) {
       if (rates == NULL)
-        rates = uc_get_rate(ds, vl);
+        rates = uc_get_rate_vl(ds, vl);
       if (rates == NULL) {
         WARNING("csv plugin: "
-                "uc_get_rate failed.");
+                "uc_get_rate_vl failed.");
         return -1;
       }
       status = snprintf(buffer + offset, buffer_len - offset, ",%lf", rates[i]);
@@ -79,9 +78,6 @@ static int value_list_to_string(char *buffer, int buffer_len,
     } else if (ds->ds[i].type == DS_TYPE_DERIVE) {
       status = snprintf(buffer + offset, buffer_len - offset, ",%" PRIi64,
                         vl->values[i].derive);
-    } else if (ds->ds[i].type == DS_TYPE_ABSOLUTE) {
-      status = snprintf(buffer + offset, buffer_len - offset, ",%" PRIu64,
-                        vl->values[i].absolute);
     }
 
     if ((status < 1) || (status >= (buffer_len - offset))) {

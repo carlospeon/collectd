@@ -375,6 +375,42 @@ DEF_TEST(value_to_rate) {
   return 0;
 }
 
+DEF_TEST(format_values) {
+  struct {
+    metric_type_t type;
+    value_t value;
+    char const *want;
+  } cases[] = {
+      {METRIC_TYPE_GAUGE, (value_t){.gauge = 47.11}, "1592558427.435:47.11"},
+      {METRIC_TYPE_GAUGE, (value_t){.gauge = NAN}, "1592558427.435:nan"},
+      {METRIC_TYPE_COUNTER, (value_t){.counter = 18446744073709551615LLU},
+       "1592558427.435:18446744073709551615"},
+  };
+
+  for (size_t i = 0; i < STATIC_ARRAY_SIZE(cases); i++) {
+    metric_family_t fam = {
+        .name = "testing",
+        .type = cases[i].type,
+    };
+    metric_t m = {
+        .family = &fam,
+        .value = cases[i].value,
+        .time = MS_TO_CDTIME_T(1592558427435),
+    };
+    metric_family_metric_append(&fam, m);
+
+    strbuf_t buf = STRBUF_CREATE;
+
+    EXPECT_EQ_INT(0, format_values(&buf, &m, false));
+    EXPECT_EQ_STR(cases[i].want, buf.ptr);
+
+    STRBUF_DESTROY(buf);
+    metric_family_metric_reset(&fam);
+  }
+
+  return 0;
+}
+
 int main(void) {
   RUN_TEST(sstrncpy);
   RUN_TEST(sstrdup);
@@ -385,6 +421,7 @@ int main(void) {
   RUN_TEST(strunescape);
   RUN_TEST(parse_values);
   RUN_TEST(value_to_rate);
+  RUN_TEST(format_values);
 
   END_TEST;
 }

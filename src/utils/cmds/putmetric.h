@@ -1,6 +1,6 @@
 /**
- * collectd - src/xmms.c
- * Copyright (C) 2007       Florian octo Forster
+ * collectd - src/utils_cmd_putval.h
+ * Copyright (C) 2007–2020  Florian octo Forster
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -24,45 +24,23 @@
  *   Florian octo Forster <octo at collectd.org>
  **/
 
-#include "collectd.h"
+#ifndef UTILS_CMD_PUTMETRIC_H
+#define UTILS_CMD_PUTMETRIC_H 1
 
 #include "plugin.h"
-#include "utils/common/common.h"
+#include "utils/cmds/cmds.h"
 
-#include <xmms/xmmsctrl.h>
+#include <stdio.h>
 
-static gint xmms_session;
+cmd_status_t cmd_parse_putmetric(size_t argc, char **argv,
+                                 cmd_putmetric_t *ret_putmetric,
+                                 const cmd_options_t *opts,
+                                 cmd_error_handler_t *err);
 
-static void cxmms_submit(const char *type, gauge_t value) {
-  value_list_t vl = VALUE_LIST_INIT;
+cmd_status_t cmd_handle_putmetric(FILE *fh, char *buffer);
 
-  vl.values = &(value_t){.gauge = value};
-  vl.values_len = 1;
-  sstrncpy(vl.plugin, "xmms", sizeof(vl.plugin));
-  sstrncpy(vl.type, type, sizeof(vl.type));
+void cmd_destroy_putmetric(cmd_putmetric_t *putmetric);
 
-  plugin_dispatch_values(&vl);
-} /* void cxmms_submit */
+int cmd_format_putmetric(strbuf_t *buf, metric_t const *m);
 
-static int cxmms_read(void) {
-  gint rate;
-  gint freq;
-  gint nch;
-
-  if (!xmms_remote_is_running(xmms_session))
-    return 0;
-
-  xmms_remote_get_info(xmms_session, &rate, &freq, &nch);
-
-  if ((freq == 0) || (nch == 0))
-    return -1;
-
-  cxmms_submit("bitrate", rate);
-  cxmms_submit("frequency", freq);
-
-  return 0;
-} /* int read */
-
-void module_register(void) {
-  plugin_register_read("xmms", cxmms_read);
-} /* void module_register */
+#endif /* UTILS_CMD_PUTMETRIC_H */

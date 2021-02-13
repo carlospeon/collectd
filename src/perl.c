@@ -115,8 +115,7 @@ static XS(Collectd__fc_register);
 static XS(Collectd_call_by_name);
 
 static int perl_read(user_data_t *ud);
-static int perl_write(const data_set_t *ds, const value_list_t *vl,
-                      user_data_t *user_data);
+static int perl_write(metric_single_t const *m, user_data_t *user_data);
 static void perl_log(int level, const char *msg, user_data_t *user_data);
 static int perl_notify(const notification_t *notif, user_data_t *user_data);
 static int perl_flush(cdtime_t timeout, const char *identifier,
@@ -232,7 +231,6 @@ struct {
                  {"Collectd::DS_TYPE_COUNTER", DS_TYPE_COUNTER},
                  {"Collectd::DS_TYPE_GAUGE", DS_TYPE_GAUGE},
                  {"Collectd::DS_TYPE_DERIVE", DS_TYPE_DERIVE},
-                 {"Collectd::DS_TYPE_ABSOLUTE", DS_TYPE_ABSOLUTE},
                  {"Collectd::LOG_ERR", LOG_ERR},
                  {"Collectd::LOG_WARNING", LOG_WARNING},
                  {"Collectd::LOG_NOTICE", LOG_NOTICE},
@@ -285,7 +283,7 @@ static int hv2data_source(pTHX_ HV *hash, data_source_t *ds) {
     ds->type = SvIV(*tmp);
 
     if ((DS_TYPE_COUNTER != ds->type) && (DS_TYPE_GAUGE != ds->type) &&
-        (DS_TYPE_DERIVE != ds->type) && (DS_TYPE_ABSOLUTE != ds->type)) {
+        (DS_TYPE_DERIVE != ds->type)) {
       log_err("hv2data_source: Invalid DS type.");
       return -1;
     }
@@ -341,8 +339,6 @@ static size_t av2value(pTHX_ char *name, AV *array, value_t *value,
         value[i].gauge = SvNV(*tmp);
       else if (DS_TYPE_DERIVE == ds->ds[i].type)
         value[i].derive = SvIV(*tmp);
-      else if (DS_TYPE_ABSOLUTE == ds->ds[i].type)
-        value[i].absolute = SvIV(*tmp);
     } else {
       return 0;
     }
@@ -350,6 +346,26 @@ static size_t av2value(pTHX_ char *name, AV *array, value_t *value,
 
   return ds->ds_num;
 } /* static size_t av2value (char *, AV *, value_t *, size_t) */
+
+static int hv2metric_list(pTHX_ HV *hash, metric_single_t *m) {
+  if ((NULL == hash) || (NULL == m))
+    return -1;
+  SV **tmp = av_fetch(array, 0, 0);
+
+  if (NULL != tmp) {
+    if (DS_TYPE_COUNTER == m->value_type)
+      m->value.counter = SvIV(*tmp);
+    else if (DS_TYPE_GAUGE == m->value_type)
+      m->value.gauge = SvNV(*tmp);
+    else if (DS_TYPE_DERIVE == m->value_type)
+      m->value.derive = SvIV(*tmp);
+    else if (DS_TYPE_ABSOLUTE == m->value_type)
+      m->value.absolute = SvIV(*tmp);
+  } else {
+    return 0;
+  }
+  return 1;
+}
 
 /*
  * value list:
@@ -647,8 +663,6 @@ static int value_list2hv(pTHX_ value_list_t *vl, data_set_t *ds, HV *hash) {
       val = newSVnv(vl->values[i].gauge);
     else if (DS_TYPE_DERIVE == ds->ds[i].type)
       val = newSViv(vl->values[i].derive);
-    else if (DS_TYPE_ABSOLUTE == ds->ds[i].type)
-      val = newSViv(vl->values[i].absolute);
 
     if (NULL == av_store(values, i, val)) {
       av_undef(values);
@@ -938,7 +952,7 @@ static int pplugin_write(pTHX_ const char *plugin, AV *data_set, HV *values) {
   if ((NULL != data_set) && (0 != av2data_set(aTHX_ data_set, vl.type, &ds)))
     return -1;
 
-  ret = plugin_write(plugin, NULL == data_set ? NULL : &ds, &vl);
+  ret = plugin_write(plugin, &metric);
   if (0 != ret)
     log_warn("Dispatching value to plugin \"%s\" failed with status %i.",
              NULL == plugin ? "<any>" : plugin, ret);
@@ -2118,8 +2132,7 @@ static int perl_read(user_data_t *user_data) {
   return pplugin_call(aTHX_ PLUGIN_READ, user_data->data);
 } /* static int perl_read (user_data_t *user_data) */
 
-static int perl_write(const data_set_t *ds, const value_list_t *vl,
-                      user_data_t *user_data) {
+static int perl_write(metric_single_t const *m, user_data_t *user_data) {
   int status;
   dTHX;
 
@@ -2144,7 +2157,7 @@ static int perl_write(const data_set_t *ds, const value_list_t *vl,
 
   log_debug("perl_write: c_ithread: interp = %p (active threads: %i)", aTHX,
             perl_threads->number_of_threads);
-  status = pplugin_call(aTHX_ PLUGIN_WRITE, user_data->data, ds, vl);
+  status = pplugin_call(aTHX_ PLUGIN_WRITE, user_data->data, m);
 
   if (aTHX == perl_threads->head->interp)
     pthread_mutex_unlock(&perl_threads->mutex);
