@@ -463,7 +463,7 @@ static int network_dispatch_values(value_list_t *vl, /* {{{ */
     }
   }
 
-  plugin_dispatch_values(vl);
+  plugin_dispatch_values_direct(vl);
   stats_values_dispatched++;
 
   meta_data_destroy(vl->meta);

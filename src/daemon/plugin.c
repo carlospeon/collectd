@@ -2186,6 +2186,36 @@ EXPORT int plugin_dispatch_metric_family(metric_family_t const *fam) {
   return status;
 }
 
+EXPORT int plugin_dispatch_metric_family_direct(metric_family_t const *fam) {
+  if ((fam == NULL) || (fam->metric.num == 0)) {
+    return EINVAL;
+  }
+
+  if (check_drop_value()) {
+    if (record_statistics) {
+      pthread_mutex_lock(&statistics_lock);
+      stats_values_dropped++;
+      pthread_mutex_unlock(&statistics_lock);
+    }
+    return 0;
+  }
+
+  // int status = enqueue_metric_family(fam);
+  // metric_family_t *fam = plugin_write_dequeue();
+  
+  // if (status != 0) {
+  //   ERROR("plugin_dispatch_values: plugin_write_enqueue_metric_list failed "
+  //         "with status %i (%s).",
+  //         status, STRERROR(status));
+  // }
+  // return status;
+  
+  (void)plugin_dispatch_metric_internal(fam);
+  metric_family_free(fam);
+  
+  return 0;
+}
+
 EXPORT int plugin_dispatch_values(value_list_t const *vl) {
   data_set_t const *ds = plugin_get_ds(vl->type);
   if (ds == NULL) {
@@ -2203,6 +2233,32 @@ EXPORT int plugin_dispatch_values(value_list_t const *vl) {
     }
 
     int status = plugin_dispatch_metric_family(fam);
+    metric_family_free(fam);
+    if (status != 0) {
+      return status;
+    }
+  }
+
+  return 0;
+}
+
+EXPORT int plugin_dispatch_values_direct(value_list_t const *vl) {
+  data_set_t const *ds = plugin_get_ds(vl->type);
+  if (ds == NULL) {
+    return EINVAL;
+  }
+
+  for (size_t i = 0; i < vl->values_len; i++) {
+    metric_family_t *fam = plugin_value_list_to_metric_family(vl, ds, i);
+    if (fam == NULL) {
+      int status = errno;
+      ERROR("plugin_dispatch_values: plugin_value_list_to_metric_family "
+            "failed: %s",
+            STRERROR(status));
+      return status;
+    }
+
+    int status = plugin_dispatch_metric_family_direct(fam);
     metric_family_free(fam);
     if (status != 0) {
       return status;
