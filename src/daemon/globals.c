@@ -43,7 +43,6 @@ int timeout_g;
 #if HAVE_KSTAT_H
 kstat_ctl_t *kc;
 #endif
-int batch_size_g;
 
 void hostname_set(char const *hostname) {
   char *h = strdup(hostname);

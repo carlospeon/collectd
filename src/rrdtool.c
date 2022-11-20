@@ -1381,10 +1381,8 @@ static int rrd_init(void) {
   queue_threads_running = 0;
   for (n=0; n < queue_threads_num; n++) {
     int status;
-    char name[16]; 
-    ssnprintf(name, sizeof(name), "rrdtool queue#%" PRIu64, (uint64_t)n);
     status = plugin_thread_create (&queue_threads[n],
-                    rrd_queue_thread, /* args = */ NULL, name);
+                    rrd_queue_thread, /* args = */ NULL, "rrdtool queue");
     if (status != 0) {
       ERROR ("rrdtool plugin: Cannot create queue-thread.");
       return (-1);
