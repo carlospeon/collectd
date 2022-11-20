@@ -142,7 +142,7 @@ static int cu_cache_event(cache_event_t *event,
     break;
   case CE_VALUE_UPDATE:
     DEBUG("check_uptime: CE_VALUE_UPDATE, %s", event->value_list_name);
-    if (uc_get_history_by_name(event->value_list_name, values_history, 2, 1)) {
+    if (uc_get_history_by_name(hostname_g, event->value_list_name, values_history, 2, 1)) {
       ERROR("check_uptime plugin: Failed to get value history for %s.",
             event->value_list_name);
     } else {
@@ -155,7 +155,7 @@ static int cu_cache_event(cache_event_t *event,
     break;
   case CE_VALUE_EXPIRED:
     DEBUG("check_uptime: CE_VALUE_EXPIRED, %s", event->value_list_name);
-    ret = uc_get_value_by_name(event->value_list_name, &values, &values_num);
+    ret = uc_get_value_by_name(hostname_g, event->value_list_name, &values, &values_num);
     if (ret == 0) {
       old_uptime = values[0].gauge;
       sfree(values);

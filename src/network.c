@@ -252,21 +252,28 @@ struct part_encryption_aes256_s {
 };
 typedef struct part_encryption_aes256_s part_encryption_aes256_t;
 
+/* Ethernet - (IPv6 + UDP) = 1500 - (40 + 8) = 1452 */
+#define NETWORK_PACKET_SIZE 1452
+
 struct receive_list_entry_s {
-  char *data;
-  int data_len;
   int fd;
   struct sockaddr_storage sender;
+  int data_len;
+  char data[NETWORK_PACKET_SIZE];
   struct receive_list_entry_s *next;
 };
 typedef struct receive_list_entry_s receive_list_entry_t;
+
+typedef struct {
+  write_queue_t *head;
+  write_queue_t *tail;
+  size_t length;
+} write_queue_list_t;
 
 /*
  * Private variables
  */
 static int network_config_ttl;
-/* Ethernet - (IPv6 + UDP) = 1500 - (40 + 8) = 1452 */
-static size_t network_config_packet_size = 1452;
 static bool network_config_forward;
 static bool network_config_stats;
 
@@ -287,8 +294,9 @@ static size_t listen_sockets_num;
 static int listen_loop;
 static int receive_thread_running;
 static pthread_t receive_thread_id;
-static int dispatch_thread_running;
-static pthread_t dispatch_thread_id;
+static int dispatch_threads_running;
+static int dispatch_threads_size = 1;
+static pthread_t *dispatch_threads_id;
 
 /* Buffer in which to-be-sent network packets are constructed. */
 static char *send_buffer;
@@ -308,8 +316,8 @@ static derive_t stats_octets_rx;
 static derive_t stats_octets_tx;
 static derive_t stats_packets_rx;
 static derive_t stats_packets_tx;
-static derive_t stats_values_dispatched;
-static derive_t stats_values_not_dispatched;
+static volatile unsigned int stats_values_dispatched;
+static volatile unsigned int stats_values_not_dispatched;
 static derive_t stats_values_sent;
 static derive_t stats_values_not_sent;
 static pthread_mutex_t stats_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -358,44 +366,7 @@ static bool check_send_okay(const value_list_t *vl) /* {{{ */
   return !received;
 } /* }}} bool check_send_okay */
 
-static bool check_notify_received(const notification_t *n) /* {{{ */
-{
-  for (notification_meta_t *ptr = n->meta; ptr != NULL; ptr = ptr->next)
-    if ((strcmp("network:received", ptr->name) == 0) &&
-        (ptr->type == NM_TYPE_BOOLEAN))
-      return (bool)ptr->nm_value.nm_boolean;
-
-  return 0;
-} /* }}} bool check_notify_received */
-
-static bool check_send_notify_okay(const notification_t *n) /* {{{ */
-{
-  static c_complain_t complain_forwarding = C_COMPLAIN_INIT_STATIC;
-  bool received = 0;
-
-  if (n->meta == NULL)
-    return 1;
-
-  received = check_notify_received(n);
-
-  if (network_config_forward && received) {
-    c_complain_once(
-        LOG_ERR, &complain_forwarding,
-        "network plugin: A notification has been received via the network "
-        "and forwarding is enabled. Forwarding of notifications is currently "
-        "not supported, because there is not loop-detection available. "
-        "Please contact the collectd mailing list if you need this "
-        "feature.");
-  }
-
-  /* By default, only *send* value lists that were not *received* by the
-   * network plugin. */
-  return !received;
-} /* }}} bool check_send_notify_okay */
-
-static int network_dispatch_values(value_list_t *vl, /* {{{ */
-                                   const char *username,
-                                   struct sockaddr_storage *address) {
+static int network_dispatch_values(write_queue_list_t *wlist, value_list_t *vl) {
   int status;
 
   if ((vl->time == 0) || (strlen(vl->host) == 0) || (strlen(vl->plugin) == 0) ||
@@ -411,62 +382,65 @@ static int network_dispatch_values(value_list_t *vl, /* {{{ */
           "NOT dispatching %s.",
           name);
 #endif
-    stats_values_not_dispatched++;
+    __atomic_fetch_add(&stats_values_not_dispatched, 1, __ATOMIC_SEQ_CST);
     return 0;
   }
 
   assert(vl->meta == NULL);
 
-  vl->meta = meta_data_create();
-  if (vl->meta == NULL) {
+  write_queue_t *q = malloc(sizeof(*q));
+  if (q == NULL)
+    return -ENOMEM;
+
+  q->next = NULL;
+  q->ctx = plugin_get_ctx();
+  q->vl = malloc(sizeof(*q->vl));
+  if (vl == NULL) {
+    sfree(q);
+    return -ENOMEM;
+  }
+  memcpy(q->vl, vl, sizeof(*q->vl));
+
+  /* Fill in the interval from the thread context, if it is zero. */
+  if (vl->interval == 0)
+    vl->interval = plugin_get_interval();
+
+  q->vl->meta = meta_data_create();
+  if (q->vl->meta == NULL) {
+    sfree(q->vl);
+    sfree(q->vl->values);
+    sfree(q);
     ERROR("network plugin: meta_data_create failed.");
     return -ENOMEM;
   }
 
-  status = meta_data_add_boolean(vl->meta, "network:received", 1);
+  status = meta_data_add_boolean(q->vl->meta, "network:received", 1);
   if (status != 0) {
     ERROR("network plugin: meta_data_add_boolean failed.");
-    meta_data_destroy(vl->meta);
-    vl->meta = NULL;
+    sfree(q->vl);
+    sfree(q->vl->values);
+    meta_data_destroy(q->vl->meta);
+    sfree(q);
     return status;
   }
 
-  if (username != NULL) {
-    status = meta_data_add_string(vl->meta, "network:username", username);
-    if (status != 0) {
-      ERROR("network plugin: meta_data_add_string failed.");
-      meta_data_destroy(vl->meta);
-      vl->meta = NULL;
-      return status;
-    }
+  if (wlist->tail == NULL) {
+    wlist->head = q;
+    wlist->tail = q;
+    wlist->length = 1;
+  } else {
+    wlist->tail->next = q;
+    wlist->tail = q;
+    wlist->length += 1;
   }
 
-  if (address != NULL) {
-    char host[48];
-    status = getnameinfo((struct sockaddr *)address,
-                         sizeof(struct sockaddr_storage), host, sizeof(host),
-                         NULL, 0, NI_NUMERICHOST | NI_NUMERICSERV);
-    if (status != 0) {
-      ERROR("network plugin: getnameinfo failed: %s", gai_strerror(status));
-      meta_data_destroy(vl->meta);
-      vl->meta = NULL;
-      return status;
-    }
-
-    status = meta_data_add_string(vl->meta, "network:ip_address", host);
-    if (status != 0) {
-      ERROR("network plugin: meta_data_add_string failed.");
-      meta_data_destroy(vl->meta);
-      vl->meta = NULL;
-      return status;
-    }
+  if (wlist->length >= batch_size_g) {
+    plugin_dispatch_write_queue(wlist->head, wlist->tail, wlist->length);
+    __atomic_fetch_add(&stats_values_dispatched, wlist->length, __ATOMIC_SEQ_CST);
+    wlist->head = NULL;
+    wlist->tail = NULL;
+    wlist->length = 0;
   }
-
-  plugin_dispatch_values(vl);
-  stats_values_dispatched++;
-
-  meta_data_destroy(vl->meta);
-  vl->meta = NULL;
 
   return 0;
 } /* }}} int network_dispatch_values */
@@ -994,7 +968,7 @@ static int parse_part_string(void **ret_buffer, size_t *ret_buffer_len,
  * parse_packet and vice versa. */
 #define PP_SIGNED 0x01
 #define PP_ENCRYPTED 0x02
-static int parse_packet(sockent_t *se, void *buffer, size_t buffer_size,
+static int parse_packet(write_queue_list_t *wlist, sockent_t *se, void *buffer, size_t buffer_size,
                         int flags, const char *username,
                         struct sockaddr_storage *sender);
 
@@ -1005,7 +979,7 @@ static int parse_packet(sockent_t *se, void *buffer, size_t buffer_size,
   } while (0)
 
 #if HAVE_GCRYPT_H
-static int parse_part_sign_sha256(sockent_t *se, /* {{{ */
+static int parse_part_sign_sha256(write_queue_list_t *wlist, sockent_t *se, /* {{{ */
                                   void **ret_buffer, size_t *ret_buffer_len,
                                   int flags, struct sockaddr_storage *sender) {
   static c_complain_t complain_no_users = C_COMPLAIN_INIT_STATIC;
@@ -1121,7 +1095,7 @@ static int parse_part_sign_sha256(sockent_t *se, /* {{{ */
             "Hash mismatch. Username: %s",
             pss.username);
   } else {
-    parse_packet(se, buffer + buffer_offset, buffer_len - buffer_offset,
+    parse_packet(wlist, se, buffer + buffer_offset, buffer_len - buffer_offset,
                  flags | PP_SIGNED, pss.username, sender);
   }
 
@@ -1136,7 +1110,7 @@ static int parse_part_sign_sha256(sockent_t *se, /* {{{ */
   /* #endif HAVE_GCRYPT_H */
 
 #else  /* if !HAVE_GCRYPT_H */
-static int parse_part_sign_sha256(sockent_t *se, /* {{{ */
+static int parse_part_sign_sha256(write_queue_list_t *wlist, sockent_t *se, /* {{{ */
                                   void **ret_buffer, size_t *ret_buffer_size,
                                   int flags, struct sockaddr_storage *sender) {
   static int warning_has_been_printed;
@@ -1169,7 +1143,7 @@ static int parse_part_sign_sha256(sockent_t *se, /* {{{ */
     warning_has_been_printed = 1;
   }
 
-  parse_packet(se, buffer + part_len, buffer_size - part_len, flags,
+  parse_packet(wlist, se, buffer + part_len, buffer_size - part_len, flags,
                /* username = */ NULL, sender);
 
   *ret_buffer = buffer + buffer_size;
@@ -1180,7 +1154,7 @@ static int parse_part_sign_sha256(sockent_t *se, /* {{{ */
 #endif /* !HAVE_GCRYPT_H */
 
 #if HAVE_GCRYPT_H
-static int parse_part_encr_aes256(sockent_t *se, /* {{{ */
+static int parse_part_encr_aes256(write_queue_list_t *wlist, sockent_t *se, /* {{{ */
                                   void **ret_buffer, size_t *ret_buffer_len,
                                   int flags, struct sockaddr_storage *sender) {
   char *buffer = *ret_buffer;
@@ -1277,7 +1251,7 @@ static int parse_part_encr_aes256(sockent_t *se, /* {{{ */
     return -1;
   }
 
-  parse_packet(se, buffer + buffer_offset, payload_len, flags | PP_ENCRYPTED,
+  parse_packet(wlist, se, buffer + buffer_offset, payload_len, flags | PP_ENCRYPTED,
                pea.username, sender);
 
   /* Update return values */
@@ -1291,7 +1265,7 @@ static int parse_part_encr_aes256(sockent_t *se, /* {{{ */
   /* #endif HAVE_GCRYPT_H */
 
 #else  /* if !HAVE_GCRYPT_H */
-static int parse_part_encr_aes256(sockent_t *se, /* {{{ */
+static int parse_part_encr_aes256(write_queue_list_t *wlist, sockent_t *se, /* {{{ */
                                   void **ret_buffer, size_t *ret_buffer_size,
                                   int flags, struct sockaddr_storage *sender) {
   static int warning_has_been_printed;
@@ -1336,7 +1310,7 @@ static int parse_part_encr_aes256(sockent_t *se, /* {{{ */
 
 #undef BUFFER_READ
 
-static int parse_packet(sockent_t *se, /* {{{ */
+static int parse_packet(write_queue_list_t *wlist, sockent_t *se, /* {{{ */
                         void *buffer, size_t buffer_size, int flags,
                         const char *username,
                         struct sockaddr_storage *address) {
@@ -1374,7 +1348,7 @@ static int parse_packet(sockent_t *se, /* {{{ */
 
     if (pkg_type == TYPE_ENCR_AES256) {
       status =
-          parse_part_encr_aes256(se, &buffer, &buffer_size, flags, address);
+          parse_part_encr_aes256(wlist, se, &buffer, &buffer_size, flags, address);
       if (status != 0) {
         ERROR("network plugin: Decrypting AES256 "
               "part failed "
@@ -1398,7 +1372,7 @@ static int parse_packet(sockent_t *se, /* {{{ */
 #endif /* HAVE_GCRYPT_H */
     else if (pkg_type == TYPE_SIGN_SHA256) {
       status =
-          parse_part_sign_sha256(se, &buffer, &buffer_size, flags, address);
+          parse_part_sign_sha256(wlist, se, &buffer, &buffer_size, flags, address);
       if (status != 0) {
         ERROR("network plugin: Verifying HMAC-SHA-256 "
               "signature failed "
@@ -1426,9 +1400,7 @@ static int parse_packet(sockent_t *se, /* {{{ */
       if (status != 0)
         break;
 
-      network_dispatch_values(&vl, username, address);
-
-      sfree(vl.values);
+      network_dispatch_values(wlist, &vl);
     } else if (pkg_type == TYPE_TIME) {
       uint64_t tmp = 0;
       status = parse_part_number(&buffer, &buffer_size, &tmp);
@@ -2203,6 +2175,8 @@ static int sockent_add(sockent_t *se) /* {{{ */
 
 static void *dispatch_thread(void __attribute__((unused)) * arg) /* {{{ */
 {
+  write_queue_list_t wlist = {0};
+
   while (42) {
     receive_list_entry_t *ent;
     sockent_t *se;
@@ -2214,44 +2188,65 @@ static void *dispatch_thread(void __attribute__((unused)) * arg) /* {{{ */
 
     /* Remove the head entry and unlock */
     ent = receive_list_head;
-    if (ent != NULL)
-      receive_list_head = ent->next;
-    receive_list_length--;
+    if (batch_size_g == 1) {
+      if (ent != NULL) {
+        receive_list_head = ent->next;
+        ent->next = NULL;
+      }
+      receive_list_length--;
+    } else {
+      receive_list_entry_t *ent_next = ent;
+      if (ent_next == NULL) {
+        receive_list_length--;
+      } else {
+        receive_list_entry_t *ent_last = NULL;
+        for (size_t i = 0; i < batch_size_g; i++) {
+          if (ent_next == NULL)
+            break;
+          ent_last = ent_next;
+          ent_next = ent_next->next;
+          receive_list_head = ent_next;
+          receive_list_length--;
+        }
+        if (ent_last != NULL)
+          ent_last->next = NULL;
+      }
+    }
     pthread_mutex_unlock(&receive_list_lock);
 
     /* Check whether we are supposed to exit. We do NOT check `listen_loop'
      * because we dispatch all missing packets before shutting down. */
     if (ent == NULL)
       break;
+    
+    while(ent != NULL) {
+      /* Look for the correct `sockent_t' */
+      se = listen_sockets;
+      while (se != NULL) {
+        size_t i;
 
-    /* Look for the correct `sockent_t' */
-    se = listen_sockets;
-    while (se != NULL) {
-      size_t i;
+        for (i = 0; i < se->data.server.fd_num; i++)
+          if (se->data.server.fd[i] == ent->fd)
+            break;
 
-      for (i = 0; i < se->data.server.fd_num; i++)
-        if (se->data.server.fd[i] == ent->fd)
+        if (i < se->data.server.fd_num)
           break;
 
-      if (i < se->data.server.fd_num)
-        break;
+        se = se->next;
+      }
 
-      se = se->next;
-    }
-
-    if (se == NULL) {
-      ERROR("network plugin: Got packet from FD %i, but can't "
-            "find an appropriate socket entry.",
-            ent->fd);
-      sfree(ent->data);
+      if (se == NULL) {
+        ERROR("network plugin: Got packet from FD %i, but can't "
+              "find an appropriate socket entry.",
+              ent->fd);
+      } else {
+        parse_packet(&wlist, se, ent->data, ent->data_len, /* flags = */ 0,
+                        /* username = */ NULL, &ent->sender);
+      }
+      receive_list_entry_t *ent_next = ent->next;
       sfree(ent);
-      continue;
+      ent = ent_next;
     }
-
-    parse_packet(se, ent->data, ent->data_len, /* flags = */ 0,
-                 /* username = */ NULL, &ent->sender);
-    sfree(ent->data);
-    sfree(ent);
   } /* while (42) */
 
   return NULL;
@@ -2259,11 +2254,7 @@ static void *dispatch_thread(void __attribute__((unused)) * arg) /* {{{ */
 
 static int network_receive(void) /* {{{ */
 {
-  char buffer[network_config_packet_size];
-  int buffer_len;
-
   int status = 0;
-
   receive_list_entry_t *private_list_head;
   receive_list_entry_t *private_list_tail;
   uint64_t private_list_length;
@@ -2284,51 +2275,37 @@ static int network_receive(void) /* {{{ */
     }
 
     for (size_t i = 0; (i < listen_sockets_num) && (status > 0); i++) {
-      receive_list_entry_t *ent;
 
       if ((listen_sockets_pollfd[i].revents & (POLLIN | POLLPRI)) == 0)
         continue;
       status--;
 
-      struct sockaddr_storage address;
-      socklen_t length = sizeof(address);
-      memset(&address, 0, length);
-      buffer_len =
-          recvfrom(listen_sockets_pollfd[i].fd, buffer, sizeof(buffer),
-                   0 /* no flags */, (struct sockaddr *)&address, &length);
-      if (buffer_len < 0) {
-        status = (errno != 0) ? errno : -1;
-        ERROR("network plugin: recv(2) failed: %s", STRERRNO);
-        break;
-      }
-
-      stats_octets_rx += ((uint64_t)buffer_len);
-      stats_packets_rx++;
-
-      /* TODO: Possible performance enhancement: Do not free
-       * these entries in the dispatch thread but put them in
-       * another list, so we don't have to allocate more and
-       * more of these structures. */
-      ent = calloc(1, sizeof(*ent));
+      receive_list_entry_t *ent = calloc(1, sizeof(*ent));
       if (ent == NULL) {
         ERROR("network plugin: calloc failed.");
         status = ENOMEM;
         break;
       }
 
-      ent->data = malloc(network_config_packet_size);
-      if (ent->data == NULL) {
-        sfree(ent);
-        ERROR("network plugin: malloc failed.");
-        status = ENOMEM;
+      socklen_t length = sizeof(ent->sender);
+      ent->fd = listen_sockets_pollfd[i].fd;
+      ent->data_len = recvfrom(ent->fd, ent->data, sizeof(ent->data),
+                   0 /* no flags */, (struct sockaddr *)&ent->sender, &length);
+      if (ent->data_len < 0) {
+        status = (errno != 0) ? errno : -1;
+        ERROR("network plugin: recv(2) failed: %s", STRERRNO);
+        free(ent);
         break;
       }
-      ent->fd = listen_sockets_pollfd[i].fd;
       ent->next = NULL;
 
-      memcpy(ent->data, buffer, buffer_len);
-      ent->data_len = buffer_len;
-      memcpy(&ent->sender, &address, sizeof(ent->sender));
+      stats_octets_rx += ((uint64_t)ent->data_len);
+      stats_packets_rx++;
+
+      /* TODO: Possible performance enhancement: Do not free
+       * these entries in the dispatch thread but put them in
+       * another list, so we don't have to allocate more and
+       * more of these structures. */
 
       if (private_list_head == NULL)
         private_list_head = ent;
@@ -2337,25 +2314,27 @@ static int network_receive(void) /* {{{ */
       private_list_tail = ent;
       private_list_length++;
 
-      /* Do not block here. Blocking here has led to
-       * insufficient performance in the past. */
-      if (pthread_mutex_trylock(&receive_list_lock) == 0) {
-        assert(((receive_list_head == NULL) && (receive_list_length == 0)) ||
-               ((receive_list_head != NULL) && (receive_list_length != 0)));
+      if (private_list_length >= batch_size_g) {
+        /* Do not block here. Blocking here has led to
+         * insufficient performance in the past. */
+        if (pthread_mutex_trylock(&receive_list_lock) == 0) {
+          assert(((receive_list_head == NULL) && (receive_list_length == 0)) ||
+                 ((receive_list_head != NULL) && (receive_list_length != 0)));
 
-        if (receive_list_head == NULL)
-          receive_list_head = private_list_head;
-        else
-          receive_list_tail->next = private_list_head;
-        receive_list_tail = private_list_tail;
-        receive_list_length += private_list_length;
+          if (receive_list_head == NULL)
+            receive_list_head = private_list_head;
+          else
+            receive_list_tail->next = private_list_head;
+          receive_list_tail = private_list_tail;
+          receive_list_length += private_list_length;
 
-        pthread_cond_signal(&receive_list_cond);
-        pthread_mutex_unlock(&receive_list_lock);
+          pthread_cond_signal(&receive_list_cond);
+          pthread_mutex_unlock(&receive_list_lock);
 
-        private_list_head = NULL;
-        private_list_tail = NULL;
-        private_list_length = 0;
+          private_list_head = NULL;
+          private_list_tail = NULL;
+          private_list_length = 0;
+        }
       }
 
       status = 0;
@@ -2388,7 +2367,7 @@ static void *receive_thread(void __attribute__((unused)) * arg) {
 } /* void *receive_thread */
 
 static void network_init_buffer(void) {
-  memset(send_buffer, 0, network_config_packet_size);
+  memset(send_buffer, 0, NETWORK_PACKET_SIZE);
   send_buffer_ptr = send_buffer;
   send_buffer_fill = 0;
   send_buffer_last_update = 0;
@@ -2699,7 +2678,7 @@ static int network_write(const data_set_t *ds, const value_list_t *vl,
   pthread_mutex_lock(&send_buffer_lock);
 
   status = add_to_buffer(send_buffer_ptr,
-                         network_config_packet_size -
+                         NETWORK_PACKET_SIZE -
                              (send_buffer_fill + BUFF_SIG_SIZE),
                          &send_buffer_vl, ds, vl);
   if (status >= 0) {
@@ -2713,7 +2692,7 @@ static int network_write(const data_set_t *ds, const value_list_t *vl,
     flush_buffer();
 
     status = add_to_buffer(send_buffer_ptr,
-                           network_config_packet_size -
+                           NETWORK_PACKET_SIZE -
                                (send_buffer_fill + BUFF_SIG_SIZE),
                            &send_buffer_vl, ds, vl);
 
@@ -2728,7 +2707,7 @@ static int network_write(const data_set_t *ds, const value_list_t *vl,
   if (status < 0) {
     ERROR("network plugin: Unable to append to the "
           "buffer for some weird reason");
-  } else if ((network_config_packet_size - send_buffer_fill) < 15) {
+  } else if ((NETWORK_PACKET_SIZE - send_buffer_fill) < 15) {
     flush_buffer();
   }
 
@@ -2815,23 +2794,6 @@ network_config_set_bind_address(const oconfig_item_t *ci,
   freeaddrinfo(res);
   return 0;
 } /* int network_config_set_bind_address */
-
-static int network_config_set_buffer_size(const oconfig_item_t *ci) /* {{{ */
-{
-  int tmp = 0;
-
-  if (cf_util_get_int(ci, &tmp) != 0)
-    return -1;
-  else if ((tmp >= 1024) && (tmp <= 65535))
-    network_config_packet_size = tmp;
-  else {
-    WARNING(
-        "network plugin: The `MaxPacketSize' must be between 1024 and 65535.");
-    return -1;
-  }
-
-  return 0;
-} /* }}} int network_config_set_buffer_size */
 
 #if HAVE_GCRYPT_H
 static int network_config_set_security_level(oconfig_item_t *ci, /* {{{ */
@@ -3017,6 +2979,24 @@ static int network_config_add_server(const oconfig_item_t *ci) /* {{{ */
   return 0;
 } /* }}} int network_config_add_server */
 
+static int network_config_set_dispatch_threads (const oconfig_item_t *ci) /* {{{ */
+{
+  double tmp;
+  if ((ci->values_num != 1)
+      || (ci->values[0].type != OCONFIG_TYPE_NUMBER))
+  {
+    WARNING ("network plugin: The `dispatch_threads' config option needs exactly "
+        "one numeric argument.");
+    return (-1);
+  }
+
+  tmp = (int) ci->values[0].value.number;
+  if (tmp > 0)
+    dispatch_threads_size = tmp;
+
+  return (0);
+} /* }}} int network_config_set_dispatch_threads */
+
 static int network_config(oconfig_item_t *ci) /* {{{ */
 {
   /* The options need to be applied first */
@@ -3035,12 +3015,14 @@ static int network_config(oconfig_item_t *ci) /* {{{ */
       network_config_add_server(child);
     else if (strcasecmp("TimeToLive", child->key) == 0) {
       /* Handled earlier */
-    } else if (strcasecmp("MaxPacketSize", child->key) == 0)
-      network_config_set_buffer_size(child);
-    else if (strcasecmp("Forward", child->key) == 0)
+    } else if (strcasecmp("MaxPacketSize", child->key) == 0) {
+      /* ignore */ 
+    } else if (strcasecmp("Forward", child->key) == 0)
       cf_util_get_boolean(child, &network_config_forward);
     else if (strcasecmp("ReportStats", child->key) == 0)
       cf_util_get_boolean(child, &network_config_stats);
+    else if (strcasecmp ("DispatchThreads", child->key) == 0)
+      network_config_set_dispatch_threads (child);
     else {
       WARNING("network plugin: Option `%s' is not allowed here.", child->key);
     }
@@ -3052,13 +3034,10 @@ static int network_config(oconfig_item_t *ci) /* {{{ */
 static int network_notification(const notification_t *n,
                                 user_data_t __attribute__((unused)) *
                                     user_data) {
-  char buffer[network_config_packet_size];
+  char buffer[NETWORK_PACKET_SIZE];
   char *buffer_ptr = buffer;
   size_t buffer_free = sizeof(buffer);
   int status;
-
-  if (!check_send_notify_okay(n))
-    return 0;
 
   memset(buffer, 0, sizeof(buffer));
 
@@ -3130,14 +3109,18 @@ static int network_shutdown(void) {
   }
 
   /* Shutdown the dispatching thread */
-  if (dispatch_thread_running != 0) {
+  if (dispatch_threads_running != 0) {
+    int n;
     INFO("network plugin: Stopping dispatch thread.");
     pthread_mutex_lock(&receive_list_lock);
     pthread_cond_broadcast(&receive_list_cond);
     pthread_mutex_unlock(&receive_list_lock);
-    pthread_join(dispatch_thread_id, /* ret = */ NULL);
-    dispatch_thread_running = 0;
+    for (n =0 ; n < dispatch_threads_size; n++) 
+      pthread_join (dispatch_threads_id[n], /* ret = */ NULL);
+    dispatch_threads_running = 0;
   }
+
+  sfree(dispatch_threads_id);
 
   sockent_destroy(listen_sockets);
 
@@ -3241,9 +3224,9 @@ static int network_init(void) {
   if (network_config_stats)
     plugin_register_read("network", network_stats_read);
 
-  plugin_register_shutdown("network", network_shutdown);
+  plugin_register_shutdown_first("network", network_shutdown);
 
-  send_buffer = malloc(network_config_packet_size);
+  send_buffer = malloc(NETWORK_PACKET_SIZE);
   if (send_buffer == NULL) {
     ERROR("network plugin: malloc failed.");
     return -1;
@@ -3260,20 +3243,37 @@ static int network_init(void) {
 
   /* If no threads need to be started, return here. */
   if ((listen_sockets_num == 0) ||
-      ((dispatch_thread_running != 0) && (receive_thread_running != 0)))
+      ((dispatch_threads_running != 0) && (receive_thread_running != 0)))
     return 0;
 
-  if (dispatch_thread_running == 0) {
-    int status;
-    status = plugin_thread_create(&dispatch_thread_id, dispatch_thread,
-                                  NULL /* no argument */, "network disp");
-    if (status != 0) {
-      ERROR("network: pthread_create failed: %s", STRERRNO);
-    } else {
-      dispatch_thread_running = 1;
+  if (dispatch_threads_id == NULL) {
+    dispatch_threads_id = calloc(sizeof(pthread_t),dispatch_threads_size);
+    if (dispatch_threads_id == NULL) {
+      ERROR ("network plugin: dispatch_threads_id: calloc failed.");
+      return (-1);
     }
   }
 
+  if (dispatch_threads_running == 0) {
+    int status;
+    int n;
+
+    for (n =0 ; n < dispatch_threads_size; n++)  {
+      char name[16];
+      ssnprintf(name, sizeof(name), "network disp#%" PRIu64, (uint64_t)n);
+      status = plugin_thread_create(&dispatch_threads_id[n],
+                                    dispatch_thread, NULL /* no argument */,
+                                    name);
+      if (status != 0) {
+        char errbuf[1024];
+        ERROR ("network: pthread_create failed: %s",
+               sstrerror (errno, errbuf,
+               sizeof (errbuf)));
+      } else {
+        dispatch_threads_running++;
+      }
+    }
+  }
   if (receive_thread_running == 0) {
     int status;
     status = plugin_thread_create(&receive_thread_id, receive_thread,

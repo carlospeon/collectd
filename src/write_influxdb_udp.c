@@ -50,6 +50,8 @@
 #include <net/if.h>
 #endif
 
+#include <pthread.h>
+
 struct sockent_client {
   int fd;
   struct sockaddr_storage *addr;
@@ -70,6 +72,8 @@ typedef struct sockent {
 } sockent_t;
 
 #define NET_DEFAULT_PACKET_SIZE 1452
+#define NET_MIN_PACKET_SIZE 1024
+#define NET_MAX_PACKET_SIZE 65507
 #define NET_DEFAULT_PORT "8089"
 
 /*
@@ -84,11 +88,25 @@ static format_influxdb_time_precision_t wifxudp_config_time_precision = MS;
 static sockent_t *sending_sockets;
 
 /* Buffer in which to-be-sent network packets are constructed. */
-static char *send_buffer;
-static char *send_buffer_ptr;
-static int send_buffer_fill;
-static cdtime_t send_buffer_last_update;
-static pthread_mutex_t send_buffer_lock = PTHREAD_MUTEX_INITIALIZER;
+typedef struct buffer {
+  char *data;
+  char *ptr;
+  int fill;
+  cdtime_t last_update;
+  pthread_mutex_t mutex;
+} buffer_t;
+
+static __thread buffer_t send_buffer = {
+  .mutex = PTHREAD_MUTEX_INITIALIZER
+};
+ 
+typedef struct buffer_node {
+  buffer_t *buffer;
+  struct buffer_node *next;
+} buffer_node_t;
+static buffer_node_t *buffer_list_head;
+static int buffer_list_length;
+static pthread_mutex_t buffer_list_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int set_ttl(const sockent_t *se, const struct addrinfo *ai) {
 
@@ -302,23 +320,22 @@ static void sockent_destroy(sockent_t *se) {
   }
 } /* void sockent_destroy */
 
-static void write_influxdb_udp_init_buffer(void) {
-  memset(send_buffer, 0, wifxudp_config_packet_size);
-  send_buffer_ptr = send_buffer;
-  send_buffer_fill = 0;
-  send_buffer_last_update = 0;
+static void write_influxdb_udp_init_buffer(buffer_t *buffer) {
+  memset(buffer->data, 0, wifxudp_config_packet_size);
+  buffer->ptr = buffer->data;
+  buffer->fill = 0;
+  buffer->last_update = 0;
 } /* write_influxdb_udp_init_buffer */
 
 static void write_influxdb_udp_send_buffer(sockent_t *sending_socket,
-                                           const char *buffer,
-                                           size_t buffer_size) {
+                                           buffer_t *buffer) {
   while (42) {
     int status = sockent_client_connect(sending_socket);
     if (status != 0)
       return;
 
     status =
-        sendto(sending_socket->client.fd, buffer, buffer_size,
+        sendto(sending_socket->client.fd, buffer->data, (size_t)buffer->fill,
                /* flags = */ 0, (struct sockaddr *)sending_socket->client.addr,
                sending_socket->client.addrlen);
     if (status < 0) {
@@ -336,51 +353,81 @@ static void write_influxdb_udp_send_buffer(sockent_t *sending_socket,
   } /* while (42) */
 } /* void write_influxdb_udp_send_buffer */
 
-static void write_influxdb_send_buffers(char *buffer, size_t buffer_len) {
+static void flush_buffer(buffer_t *buffer) {
   for (sockent_t *se = sending_sockets; se != NULL; se = se->next) {
-    pthread_mutex_lock(&se->lock);
-    write_influxdb_udp_send_buffer(se, buffer, buffer_len);
-    pthread_mutex_unlock(&se->lock);
-  } /* for (sending_sockets) */
-}
-
-static void flush_buffer(void) {
-  write_influxdb_send_buffers(send_buffer, (size_t)send_buffer_fill);
-  write_influxdb_udp_init_buffer();
+    //pthread_mutex_lock(&se->lock);
+    write_influxdb_udp_send_buffer(se, buffer);
+    //pthread_mutex_unlock(&se->lock);
+  }
+  write_influxdb_udp_init_buffer(buffer);
 }
 
 static int
 write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
                          user_data_t __attribute__((unused)) * user_data) {
-  char buffer[NET_DEFAULT_PACKET_SIZE];
+  pthread_mutex_lock(&send_buffer.mutex);
 
-  int status = format_influxdb_value_list(buffer, NET_DEFAULT_PACKET_SIZE, ds,
-                                          vl, wifxudp_config_store_rates,
+  if (send_buffer.data == NULL) {
+    send_buffer.data = malloc(wifxudp_config_packet_size);
+    if (send_buffer.data == NULL) {
+      ERROR("write_influxdb_udp: write_influxdb_udp_write send_buffer malloc failed.");
+      pthread_mutex_unlock(&send_buffer.mutex);
+      return -1;
+    }
+    write_influxdb_udp_init_buffer(&send_buffer);
+
+    buffer_node_t *buffer_node = malloc(sizeof(*buffer_node));
+    if (buffer_node == NULL) {
+      ERROR("write_influxdb_udp: write_influxdb_udp_write buffer_node malloc failed.");
+      pthread_mutex_unlock(&send_buffer.mutex);
+      return -1;
+    }
+    buffer_node->buffer = &send_buffer;
+
+    pthread_mutex_lock(&buffer_list_mutex);
+    if (buffer_list_head != NULL)
+      buffer_node->next = buffer_list_head;
+    buffer_list_head = buffer_node;
+    buffer_list_length++;
+    DEBUG("write_influxdb_udp: write_influxdb_udp_write added buffer number %d", buffer_list_length);
+    pthread_mutex_unlock(&buffer_list_mutex);
+  }
+
+  
+  int status = format_influxdb_value_list(send_buffer.ptr, 
+                                          wifxudp_config_packet_size - send_buffer.fill,
+                                          ds, vl, wifxudp_config_store_rates,
                                           wifxudp_config_time_precision);
 
   if (status < 0) {
-    ERROR("write_influxdb_udp plugin: write_influxdb_udp_write failed.");
+    flush_buffer(&send_buffer);
+    status = format_influxdb_value_list(send_buffer.ptr, 
+                                        wifxudp_config_packet_size - send_buffer.fill,
+                                        ds, vl, wifxudp_config_store_rates,
+                                        wifxudp_config_time_precision);
+  }
+  if (status < 0) {
+    ERROR("write_influxdb_udp plugin: write_influxdb_udp_write write_influxdb_point failed.");
+    pthread_mutex_unlock(&send_buffer.mutex);
     return -1;
   }
-  if (status == 0) /* no real values to send (nan) */
+  if (status == 0) {
+    /* no real values to send (nan) */
+    pthread_mutex_unlock(&send_buffer.mutex);
     return 0;
+  }
 
-  pthread_mutex_lock(&send_buffer_lock);
-  if (wifxudp_config_packet_size - send_buffer_fill < status)
-    flush_buffer();
-  memcpy(send_buffer_ptr, buffer, status);
+  send_buffer.fill += status;
+  send_buffer.ptr += status;
+  send_buffer.last_update = cdtime();
 
-  send_buffer_fill += status;
-  send_buffer_ptr += status;
-  send_buffer_last_update = cdtime();
-
-  if (wifxudp_config_packet_size - send_buffer_fill < 120)
+  if (wifxudp_config_packet_size - send_buffer.fill < 120)
     /* No room for a new point of average size in buffer,
        the probability of fail for the new point is bigger than
        the probability of success */
-    flush_buffer();
+    flush_buffer(&send_buffer);
 
-  pthread_mutex_unlock(&send_buffer_lock);
+  pthread_mutex_unlock(&send_buffer.mutex);
   return 0;
 } /* int write_influxdb_udp_write */
 
@@ -405,11 +452,12 @@ static int wifxudp_config_set_buffer_size(const oconfig_item_t *ci) {
 
   if (cf_util_get_int(ci, &tmp) != 0)
     return -1;
-  else if ((tmp >= 1024) && (tmp <= 65535))
+  else if ((tmp >= NET_MIN_PACKET_SIZE) && (tmp <= NET_MAX_PACKET_SIZE))
     wifxudp_config_packet_size = tmp;
   else {
     WARNING("write_influxdb_udp plugin: "
-            "The `MaxPacketSize' must be between 1024 and 65535.");
+            "The `MaxPacketSize' must be between %d and %d.",
+            NET_MIN_PACKET_SIZE, NET_MAX_PACKET_SIZE);
     return -1;
   }
 
@@ -520,10 +568,15 @@ static int write_influxdb_udp_config(oconfig_item_t *ci) {
 } /* int write_influxdb_udp_config */
 
 static int write_influxdb_udp_shutdown(void) {
-  if (send_buffer_fill > 0)
-    flush_buffer();
-
-  sfree(send_buffer);
+  buffer_node_t *buffer_node;
+  while ((buffer_node = buffer_list_head) != NULL) {
+    buffer_list_head = buffer_node->next;
+    sfree(buffer_node->buffer->data);
+    sfree(buffer_node);
+    buffer_list_length--;
+    DEBUG("write_influxdb_udp: write_influxdb_udp_shutdown removed buffer number %d", buffer_list_length);
+  }
+  //pthread_mutex_unlock(&buffer_list_mutex);
 
   for (sockent_t *se = sending_sockets; se != NULL; se = se->next)
     sockent_client_disconnect(se);
@@ -548,13 +601,6 @@ static int write_influxdb_udp_init(void) {
 
   plugin_register_shutdown("write_influxdb_udp", write_influxdb_udp_shutdown);
 
-  send_buffer = malloc(wifxudp_config_packet_size);
-  if (send_buffer == NULL) {
-    ERROR("write_influxdb_udp plugin: malloc failed.");
-    return -1;
-  }
-  write_influxdb_udp_init_buffer();
-
   /* setup socket(s) and so on */
   if (sending_sockets != NULL) {
     plugin_register_write("write_influxdb_udp", write_influxdb_udp_write,
@@ -569,19 +615,21 @@ static int write_influxdb_udp_flush(cdtime_t timeout,
                                     const char *identifier,
                                     __attribute__((unused))
                                     user_data_t *user_data) {
-  pthread_mutex_lock(&send_buffer_lock);
-
-  if (send_buffer_fill > 0) {
-    if (timeout > 0) {
-      cdtime_t now = cdtime();
-      if ((send_buffer_last_update + timeout) > now) {
-        pthread_mutex_unlock(&send_buffer_lock);
-        return 0;
+  for (buffer_node_t *buffer_node = buffer_list_head; 
+       buffer_node != NULL; buffer_node = buffer_node->next) {
+    pthread_mutex_lock(&buffer_node->buffer->mutex);
+    if (buffer_node->buffer->fill > 0 ) {
+      if (timeout > 0) {
+        cdtime_t now = cdtime();
+        if ((buffer_node->buffer->last_update + timeout) > now) {
+          pthread_mutex_unlock(&buffer_node->buffer->mutex);
+          continue;
+        }
       }
+      flush_buffer(buffer_node->buffer);
     }
-    flush_buffer();
+    pthread_mutex_unlock(&buffer_node->buffer->mutex);
   }
-  pthread_mutex_unlock(&send_buffer_lock);
 
   return 0;
 } /* int write_influxdb_udp_flush */

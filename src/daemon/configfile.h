@@ -137,4 +137,6 @@ int cf_util_get_service(const oconfig_item_t *ci, char **ret_string);
 
 int cf_util_get_cdtime(const oconfig_item_t *ci, cdtime_t *ret_value);
 
+int cf_get_cpumap(const char *name);
+
 #endif /* defined(CONFIGFILE_H) */

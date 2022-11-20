@@ -50,7 +50,6 @@ typedef struct threshold_s {
 } threshold_t;
 
 extern c_avl_tree_t *threshold_tree;
-extern pthread_mutex_t threshold_lock;
 
 threshold_t *threshold_get(const char *hostname, const char *plugin,
                            const char *plugin_instance, const char *type,

@@ -407,7 +407,7 @@ static int get_reference_temperature(double *result) {
        dynamic changing of number of temperarure values in runtime yet (are
        there any such cases?). */
     if (!list->initialized) {
-      if (uc_get_rate_by_name(list->sensor_name, &values, &values_num)) {
+      if (uc_get_rate_by_name(hostname_g, list->sensor_name, &values, &values_num)) {
         DEBUG(
             "barometer: get_reference_temperature - rate \"%s\" not found yet",
             list->sensor_name);
@@ -436,7 +436,7 @@ static int get_reference_temperature(double *result) {
 
     /* It is OK to get here the first time as well, in the worst case
        the history will full of NANs. */
-    if (uc_get_history_by_name(list->sensor_name, values_history,
+    if (uc_get_history_by_name(hostname_g, list->sensor_name, values_history,
                                REF_TEMP_AVG_NUM, list->num_values)) {
       ERROR("barometer: get_reference_temperature - history \"%s\" lost",
             list->sensor_name);
@@ -457,7 +457,7 @@ static int get_reference_temperature(double *result) {
 
     if (avg_num == 0) /* still no history? fallback to current */
     {
-      if (uc_get_rate_by_name(list->sensor_name, &values, &values_num)) {
+      if (uc_get_rate_by_name(hostname_g, list->sensor_name, &values, &values_num)) {
         ERROR("barometer: get_reference_temperature - rate \"%s\" lost",
               list->sensor_name);
         list->initialized = 0;

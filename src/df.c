@@ -59,7 +59,7 @@ static ignorelist_t *il_errors;
 
 static bool by_device;
 static bool report_inodes;
-static bool values_absolute = true;
+static bool values_absolute = false;
 static bool values_percentage;
 static bool log_once;
 
@@ -140,6 +140,28 @@ static int df_config(const char *key, const char *value) {
   return -1;
 }
 
+static void df_submit_two (char *df_name,
+               const char *type,
+               gauge_t df_used,
+               gauge_t df_free)
+{
+  value_t values[2];
+  value_list_t vl = VALUE_LIST_INIT;
+
+  values[0].gauge = df_used;
+  values[1].gauge = df_free;
+
+  vl.values = values;
+  vl.values_len = 2;
+  sstrncpy (vl.host, hostname_g, sizeof (vl.host));
+  sstrncpy (vl.plugin, "df", sizeof (vl.plugin));
+  sstrncpy (vl.plugin_instance, df_name, sizeof (vl.plugin_instance));
+  sstrncpy (vl.type, type, sizeof (vl.type));
+  sstrncpy (vl.type_instance, "", sizeof (vl.type_instance));
+
+  plugin_dispatch_values (&vl);
+} /* void df_submit_two */
+
 __attribute__((nonnull(2))) static void df_submit_one(char *plugin_instance,
                                                       const char *type,
                                                       const char *type_instance,
@@ -193,6 +215,8 @@ static int df_read(void) {
     if (ignorelist_match(il_fstype, mnt_ptr->type))
       continue;
 
+    mnt_ptr->match = true;
+
     /* search for duplicates *in front of* the current mnt_ptr. */
     for (dup_ptr = mnt_list; dup_ptr != NULL; dup_ptr = dup_ptr->next) {
       /* No duplicate found: mnt_ptr is the first of its kind. */
@@ -200,7 +224,9 @@ static int df_read(void) {
         dup_ptr = NULL;
         break;
       }
-
+      /* if the match list has not passed, skip */
+      if (dup_ptr->match == false)
+        continue;
       /* Duplicate found: leave non-NULL dup_ptr. */
       if (by_device && (mnt_ptr->spec_device != NULL) &&
           (dup_ptr->spec_device != NULL) &&
@@ -292,6 +318,13 @@ static int df_read(void) {
       df_submit_one(disk_name, "df_complex", "used",
                     (gauge_t)(blk_used * blocksize));
     }
+    else
+    {
+      df_submit_two (disk_name, "df",
+                    (gauge_t) (blk_used * blocksize),
+                    (gauge_t) (blk_free * blocksize));
+    }
+
 
     if (values_percentage) {
       if (statbuf.f_blocks > 0) {

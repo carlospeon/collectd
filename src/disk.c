@@ -68,11 +68,17 @@
 #endif
 
 #if HAVE_PERFSTAT
-#ifndef _AIXVERSION_610
-#include <sys/systemcfg.h>
-#endif
 #include <libperfstat.h>
 #include <sys/protosw.h>
+/* XINTFRAC was defined in libperfstat.h somewhere between AIX 5.3 and 6.1 */
+# ifndef XINTFRAC
+#  include <sys/systemcfg.h>
+#  define XINTFRAC ((double)(_system_configuration.Xint) / \
+                   (double)(_system_configuration.Xfrac))
+# endif
+# ifndef HTIC2NANOSEC
+#  define HTIC2NANOSEC(x)  (((double)(x) * XINTFRAC))
+# endif
 #endif
 
 #if HAVE_IOKIT_IOKITLIB_H
@@ -135,6 +141,26 @@ static int numdisk;
 static perfstat_disk_t *stat_disk;
 static int numdisk;
 static int pnumdisk;
+
+typedef struct diskstats {
+  char *name;
+
+  /* This overflows in roughly 1361 years */
+  unsigned int poll_count;
+
+  derive_t read_ops;
+  derive_t write_ops;
+  derive_t read_time;
+  derive_t write_time;
+
+  derive_t avg_read_time;
+  derive_t avg_write_time;
+
+  struct diskstats *next;
+} diskstats_t;
+
+static diskstats_t *disklist;
+
 /* #endif HAVE_PERFSTAT */
 
 #elif HAVE_SYSCTL && KERNEL_NETBSD
@@ -321,7 +347,7 @@ static void disk_submit(const char *plugin_instance, const char *type,
   plugin_dispatch_values(&vl);
 } /* void disk_submit */
 
-#if KERNEL_FREEBSD || (HAVE_SYSCTL && KERNEL_NETBSD) || KERNEL_LINUX
+#if KERNEL_FREEBSD || (HAVE_SYSCTL && KERNEL_NETBSD) || KERNEL_LINUX || HAVE_PERFSTAT
 static void submit_io_time(char const *plugin_instance, derive_t io_time,
                            derive_t weighted_time) {
   value_list_t vl = VALUE_LIST_INIT;
@@ -1042,13 +1068,14 @@ static int disk_read(void) {
   /* #endif defined(HAVE_LIBSTATGRAB) */
 
 #elif defined(HAVE_PERFSTAT)
-  derive_t read_sectors;
-  derive_t write_sectors;
+  derive_t read_bytes;
+  derive_t write_bytes;
   derive_t read_time;
   derive_t write_time;
   derive_t read_ops;
   derive_t write_ops;
   perfstat_id_t firstpath;
+  diskstats_t *ds, *pre_ds;
   int rnumdisk;
 
   if ((numdisk = perfstat_disk(NULL, NULL, sizeof(perfstat_disk_t), 0)) < 0) {
@@ -1073,23 +1100,93 @@ static int disk_read(void) {
     if (ignorelist_match(ignorelist, stat_disk[i].name) != 0)
       continue;
 
-    read_sectors = stat_disk[i].rblks * stat_disk[i].bsize;
-    write_sectors = stat_disk[i].wblks * stat_disk[i].bsize;
-    disk_submit(stat_disk[i].name, "disk_octets", read_sectors, write_sectors);
+    derive_t diff_read_ops;
+    derive_t diff_write_ops;
+    derive_t diff_read_time;
+    derive_t diff_write_time;
+    char *disk_name;
+
+    disk_name = stat_disk[i].name;
+
+    for (ds = disklist, pre_ds = disklist; ds != NULL;
+            pre_ds = ds, ds = ds->next)
+    {
+      if (strcmp (disk_name, ds->name) == 0)
+        break;
+    }
+
+    if (ds == NULL)
+    {
+      ds = (diskstats_t *) calloc (1, sizeof (diskstats_t));
+      if (ds == NULL)
+        continue;
+
+      if ((ds->name = strdup (disk_name)) == NULL)
+      {
+        free (ds);
+        continue;
+      }
+
+      if (pre_ds == NULL)
+        disklist = ds;
+      else
+        pre_ds->next = ds;
+    }
+
+    read_bytes = stat_disk[i].rblks*stat_disk[i].bsize;
+    write_bytes = stat_disk[i].wblks*stat_disk[i].bsize;
 
     read_ops = stat_disk[i].xrate;
     write_ops = stat_disk[i].xfers - stat_disk[i].xrate;
-    disk_submit(stat_disk[i].name, "disk_ops", read_ops, write_ops);
+    read_time = HTIC2NANOSEC(stat_disk[i].rserv) / 1000000.0;
+    write_time = HTIC2NANOSEC(stat_disk[i].wserv) / 1000000.0;
 
-    read_time = stat_disk[i].rserv;
-    read_time *= ((double)(_system_configuration.Xint) /
-                  (double)(_system_configuration.Xfrac)) /
-                 1000000.0;
-    write_time = stat_disk[i].wserv;
-    write_time *= ((double)(_system_configuration.Xint) /
-                   (double)(_system_configuration.Xfrac)) /
-                  1000000.0;
-    disk_submit(stat_disk[i].name, "disk_time", read_time, write_time);
+    diff_read_ops = read_ops - ds->read_ops;
+    diff_write_ops = write_ops - ds->write_ops;
+
+    diff_read_time = read_time - ds->read_time;
+    diff_write_time = write_time - ds->write_time;
+
+    if (diff_read_ops != 0)
+      ds->avg_read_time += disk_calc_time_incr(diff_read_time, diff_read_ops);
+    if (diff_write_ops != 0)
+      ds->avg_write_time += disk_calc_time_incr(diff_write_time, diff_write_ops);
+
+    ds->read_ops = read_ops;
+    ds->read_time = read_time;
+
+    ds->write_ops = write_ops;
+    ds->write_time = write_time;
+
+    ds->poll_count++;
+    if (ds->poll_count <= 2)
+    {
+       DEBUG ("disk plugin: (ds->poll_count = %i) <= "
+                       "(min_poll_count = 2); => Not writing.",
+                       ds->poll_count);
+       continue;
+    }
+
+    if ((read_ops == 0) && (write_ops == 0))
+    {
+       DEBUG ("disk plugin: ((read_ops == 0) && "
+                       "(write_ops == 0)); => Not writing.");
+       continue;
+    }
+
+    if ((read_bytes != 0) || (write_bytes != 0))
+       disk_submit (disk_name, "disk_octets",
+                            read_bytes, write_bytes);
+
+    if ((read_ops != 0) || (write_ops != 0))
+       disk_submit (disk_name, "disk_ops",
+                            read_ops, write_ops);
+
+    if ((ds->avg_read_time != 0) || (ds->avg_write_time != 0))
+       disk_submit (disk_name, "disk_time",
+                            ds->avg_read_time, ds->avg_write_time);
+
+
   }
 /* #endif defined(HAVE_PERFSTAT) */
 #elif HAVE_SYSCTL && KERNEL_NETBSD

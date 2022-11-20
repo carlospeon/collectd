@@ -109,24 +109,14 @@ frequency_offset        value:GAUGE:-1000000:1000000
 fscache_stat            value:DERIVE:0:U
 gauge                   value:GAUGE:U:U
 hash_collisions         value:DERIVE:0:U
+hba_frames              read:DERIVE:0:U, write:DERIVE:0:U
+hba_octects             read:DERIVE:0:U, write:DERIVE:0:U
+hba_ops                 read:DERIVE:0:U, write:DERIVE:0:U
 health                  value:GAUGE:0:18446744073709551615
 http_request_methods    value:DERIVE:0:U
 http_requests           value:DERIVE:0:U
 http_response_codes     value:DERIVE:0:U
 humidity                value:GAUGE:0:100
-ib_cap_mask             value:GAUGE:0:4294967295
-ib_errors               value:DERIVE:0:U
-ib_lid                  value:GAUGE:0:32767
-ib_lid_mask_count       value:GAUGE:0:7
-ib_link_error_recovery  value:DERIVE:0:U
-ib_octets               rx:DERIVE:0:U, tx:DERIVE:0:U
-ib_packets              rx:DERIVE:0:U, tx:DERIVE:0:U
-ib_phys_state           value:GAUGE:0:15
-ib_rate                 value:GAUGE:0:U
-ib_sm_lid               value:GAUGE:0:32767
-ib_sm_sl                value:GAUGE:0:15
-ib_state                value:GAUGE:0:15
-ib_xmit_wait            value:DERIVE:0:U
 if_collisions           value:DERIVE:0:U
 if_dropped              rx:DERIVE:0:U, tx:DERIVE:0:U
 if_errors               rx:DERIVE:0:U, tx:DERIVE:0:U
@@ -152,6 +142,7 @@ ipt_packets             value:DERIVE:0:U
 irq                     value:DERIVE:0:U
 job_stats               value:DERIVE:0:U
 latency                 value:GAUGE:0:U
+leap_indicator          value:GAUGE:0:U
 links                   value:GAUGE:0:U
 load                    shortterm:GAUGE:0:5000, midterm:GAUGE:0:5000, longterm:GAUGE:0:5000
 max_ec                  value:GAUGE:0:U
@@ -326,6 +317,7 @@ snr                     value:GAUGE:0:U
 spam_check              value:GAUGE:0:U
 spam_score              value:GAUGE:U:U
 spl                     value:GAUGE:U:U
+stratum                 value:GAUGE:U:U
 swap                    value:GAUGE:0:1099511627776
 swap_io                 value:DERIVE:0:U
 sysevent                value:GAUGE:0:1
@@ -375,6 +367,7 @@ voltage_threshold       value:GAUGE:U:U, threshold:GAUGE:U:U
 vs_memory               value:GAUGE:0:9223372036854775807
 vs_processes            value:GAUGE:0:65535
 vs_threads              value:GAUGE:0:65535
+wlm                     value:GAUGE:0:U
 
 #
 # Legacy types

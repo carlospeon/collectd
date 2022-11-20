@@ -407,7 +407,8 @@ static int rc_write(const data_set_t *ds, const value_list_t *vl,
         return -1;
       }
 
-      status = cu_rrd_create_file(filename, ds, vl, &rrdcreate_config);
+      status = cu_rrd_create_file(filename, vl->type, vl->time, vl->interval,
+                                  &rrdcreate_config);
       if (status != 0) {
         ERROR("rrdcached plugin: cu_rrd_create_file (%s) failed.", filename);
         return -1;

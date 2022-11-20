@@ -121,7 +121,17 @@ static int init_global_variables(void) {
   assert(interval_g > 0);
   DEBUG("interval_g = %.3f;", CDTIME_T_TO_DOUBLE(interval_g));
 
-  const char *str = global_option_get("Timeout");
+  const char *str = global_option_get("BatchSize");
+  if (str == NULL)
+    str = "1";
+  batch_size_g = atoi(str);
+  if (batch_size_g < 1) {
+    fprintf(stderr, "Cannot set the batch size to a correct value.\n"
+                    "Please check your settings.\n");
+    return -1;
+  }
+
+  str = global_option_get("Timeout");
   if (str == NULL)
     str = "2";
   timeout_g = atoi(str);

@@ -8,6 +8,8 @@ Requires=local-fs.target network-online.target
 ExecStart=/usr/sbin/collectd
 EnvironmentFile=-/etc/sysconfig/collectd
 EnvironmentFile=-/etc/default/collectd
+ProtectSystem=false
+ProtectHome=false
 
 # A few plugins won't work without some privileges, which you'll have to
 # specify using the CapabilityBoundingSet directive below.
@@ -27,8 +29,7 @@ EnvironmentFile=-/etc/default/collectd
 # Example, if you use the iptables plugin alongside the dns or ping plugin:
 #CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
 #
-# By default, drop all capabilities:
-CapabilityBoundingSet=
+CapabilityBoundingSet=~
 
 # Tell systemd it will receive a notification from collectd over its control
 # socket once the daemon is ready. See systemd.service(5) for more details.

@@ -3029,6 +3029,40 @@ I<contrib/99-storage-collectd.rules> udev rule file instead.
 
 =back
 
+=head2 Plugin C<diskpath>
+
+The C<diskpath> plugin collects information about the usage of disk paths.
+Values collected are the number of octets written to and read from a disk path,
+the number of read/write operations issued to the disk path and a rather complex
+"time" it took for these commands to be issued.
+
+Using the following two options you can ignore some disk paths or configure the
+collection only of specific disk paths.
+
+=over 4
+
+=item B<DiskPath> I<Name>
+
+Select the disk path I<Name>. Whether it is collected or ignored depends on the
+B<IgnoreSelected> setting, see below. As with other plugins that use the
+daemon's ignorelist functionality, a string that starts and ends with a slash
+is interpreted as a regular expression. Examples:
+
+  DiskPath "hdisk0_Path0
+  DiskPath "/hdisk1_Path[0-9]/"
+
+=item B<IgnoreSelected> B<true>|B<false>
+
+Sets whether selected disk paths, i.E<nbsp>e. the ones matches by any of the
+B<DiskPath> statements, are ignored or if all other disk paths are ignored.
+The behavior (hopefully) is intuitive: If no B<DiskPath> option is configured,
+all disk paths are collected. If at least one B<DiskPath> option is given and
+no B<IgnoreSelected> or set to B<false>, B<only> matching disk paths will be
+collected. If B<IgnoreSelected> is set to B<true>, all disk paths are collected
+B<except> the ones matched.
+
+=back
+
 =head2 Plugin C<dns>
 
 =over 4
@@ -3779,6 +3813,43 @@ certificate is accepted.
 Enabled by default.
 
 =back
+
+=back
+
+=head2 Plugin C<hba>
+
+The C<hba> plugin use the library I<libHBAAPI> to collect  information about
+the usage of host bus adapters. Values collected are the number of octets
+written to and read from a hba, the number of read/write operations issued to
+the hba and mumber of received/transmitted frames from a hba.
+
+In I<AIX> the library I<libHBAAPI> is not used for efficiency.
+
+The plugin only collect data from Fibre Channel adapters.
+
+Using the following two options you can ignore some hbas or configure the
+collection only of specific hbas.
+
+=over 4
+
+=item B<Hba> I<Name>
+
+Select the hba I<Name>. Whether it is collected or ignored depends on the
+B<IgnoreSelected> setting, see below. As with other plugins that use the
+daemon's ignorelist functionality, a string that starts and ends with a slash
+is interpreted as a regular expression. Examples:
+
+  Hba "fcs1"
+  Hba "/fcs[01]/"
+
+=item B<IgnoreSelected> B<true>|B<false>
+
+Sets whether selected hba, i.E<nbsp>e. the ones matches by any of the B<Hba>
+statements, are ignored or if all other hbas are ignored. The behavior
+(hopefully) is intuitive: If no B<Hba> option is configured, all hbas are
+collected. If at least one B<Hba> option is given and no B<IgnoreSelected> or
+set to B<false>, B<only> matching hbas will be collected. If B<IgnoreSelected>
+is set to B<true>, all hbas are collected B<except> the ones matched.
 
 =back
 
@@ -5300,6 +5371,45 @@ B<Collect> option is mandatory.
 
 =back
 
+=head2 Plugin C<mongodb>
+
+The I<mongodb plugin> will collect stats from I<MongoDB>, a schema-less
+NoSQL database.
+
+B<Synopsis:>
+
+ <Plugin "mongodb">
+   Host     "localhost"
+   Port     "27017"
+   User     "collectd"
+   Password "oquu9Zow"
+ </Plugin>
+
+The plugin read stats from I<MongoDB> database.
+The following options are available:
+
+=over 4
+
+=item B<Host> I<Address>
+
+Hostname or address to connect to. Defaults to C<localhost>.
+
+=item B<Port> I<Service>
+
+Service name or port number to connect to. Defaults to C<27017>.
+
+=item B<PreferSecondaryQuery> B<false>|B<true>
+
+=item B<User> I<User>
+
+=item B<Password> I<Password>
+
+Sets the information used when authenticating to a I<MongoDB> database. The
+fields are optional (in which case no authentication is attempted), but if you
+want to use authentication all three fields must be set.
+
+=back
+
 =head2 Plugin C<mqtt>
 
 The I<MQTT plugin> can send metrics to MQTT (B<Publish> blocks) and receive
@@ -6512,6 +6622,106 @@ B<URL> option.
 
 =back
 
+=head2 Plugin C<notify_dbi>
+
+The I<notify_dbi> plugin use the I<dbi> library (L<http://libdbi.sourceforge.net/>) 
+to send notifications to various databases, executing I<SQL> statements when 
+a notification arrives.
+
+ <Plugin notify_dbi>
+   <Database "mysql">
+     Driver "mysql"
+     DriverOption "host" "127.0.0.1"
+     DriverOption "port" "3306"
+     DriverOption "username" "collectd"
+     DriverOption "password" "collectd"
+     DriverOption "dbname" "collectd"
+
+     Query "Failure" "Warning" "Ok" "INSERT INTO alert_history (host, plugin, plugin_instance, type, type_instance, time, severity, message) VALUES ('%{host}', '%{plugin}', '%{plugin_instance}', '%{type}', '%{type_instance}', '%{time}', '%{severity}', '%{message}')"
+     Query "Failure" "Warning" "DELETE FROM alert where host = '%{host}' and plugin = '%{plugin}' and plugin_instance = '%{plugin_instance}' and type = '%{type}' and type_instance = '%{type_instance}'"
+     Query "Failure" "Warning" "INSERT INTO alert (host, plugin, plugin_instance, type, type_instance, time, severity, message) VALUES ('%{host}', '%{plugin}', '%{plugin_instance}', '%{type}', '%{type_instance}', '%{time}', '%{severity}', '%{message}')"
+     Query "Ok" "DELETE FROM alert where host = '%{host}' and plugin = '%{plugin}' and plugin_instance = '%{plugin_instance}' and type = '%{type}' and type_instance = '%{type_instance}'"
+   </Database>
+ </Plugin>
+
+=head3 B<Database> blocks
+
+Database blocks define a connection to a database and which queries should be
+sent to that database. Since the used "dbi" library can handle a wide variety
+of databases, the configuration is very generic. If in doubt, refer to libdbi's
+documentationE<nbsp>- we stick as close to the terminology used there.
+
+Each database needs a "name" as string argument in the starting tag of the
+block.
+
+=over 4
+
+=item B<Driver> I<Driver>
+
+Specifies the driver to use to connect to the database. In many cases those
+drivers are named after the database they can connect to, but this is not a
+technical necessity. These drivers are sometimes referred to as "DBD",
+B<D>ataB<B>ase B<D>river, and some distributions ship them in separate
+packages. Drivers for the "dbi" library are developed by the B<libdbi-drivers>
+project at L<http://libdbi-drivers.sourceforge.net/>.
+
+You need to give the driver name as expected by the "dbi" library here. You
+should be able to find that in the documentation for each driver. If you
+mistype the driver name, the plugin will dump a list of all known driver names
+to the log.
+
+=item B<DriverOption> I<Key> I<Value>
+
+Sets driver-specific options. What option a driver supports can be found in the
+documentation for each driver, somewhere at
+L<http://libdbi-drivers.sourceforge.net/>. However, the options "host",
+"username", "password", and "dbname" seem to be deE<nbsp>facto standards.
+
+Unfortunately, drivers are not too keen to report errors when an unknown option
+is passed to them, so invalid settings here may go unnoticed. This is not the
+plugin's fault, it will report errors if it gets them from the libraryE<nbsp>/
+the driver. If a driver complains about an option, the plugin will dump a
+complete list of all options understood by that driver to the log.
+
+=item B<SelectDB> I<Database>
+
+In some cases, the database name you connect with is not the database name you
+want to use for querying data. If this option is set, the plugin will "select"
+(switch to) that database after the connection is established.
+
+=item B<Query> [B<Failure>|B<Warning>|B<Ok> ...] I<Statement>
+
+Execute the statement when a notification match any of the serverities defined.
+The following placeholders will be replaced by an appropriate value:
+
+=over 4
+
+=item B<%{severity}>
+
+=item B<%{time}>
+
+=item B<%{host}>
+
+=item B<%{plugin}>
+
+=item B<%{plugin_instance}>
+
+=item B<%{type}>
+
+=item B<%{type_instance}>
+
+=item B<%{message}>
+
+=item B<%{data_source}>
+
+=item B<%{value}>
+
+These placeholders are replaced by the identifier field of the same name.
+
+=back
+
+=back
+
 =head2 Plugin C<notify_desktop>
 
 This plugin sends a desktop notification to a notification daemon, as defined
@@ -6609,6 +6819,131 @@ Sets the I<command file> to write to. Defaults to F</usr/local/nagios/var/rw/nag
 
 =back
 
+=head2 Plugin C<notify_snmp>
+
+This plugin use the Net-SNMP library to send notifications as B<SNMP> B<Traps>.
+
+ <Plugin notify_snmp>
+   <OIDs collectd>
+     EnterpriseOID     "SNMPv2-SMI::experimental.100"
+     TrapOID           "SNMPv2-SMI::experimental.100.1"
+     TimeStampOID      "SNMPv2-SMI::experimental.100.2.1"
+     SeverityOID       "SNMPv2-SMI::experimental.100.2.2"
+     HostOID           "SNMPv2-SMI::experimental.100.2.3"
+     PluginOID         "SNMPv2-SMI::experimental.100.2.4"
+     PluginInstanceOID "SNMPv2-SMI::experimental.100.2.5"
+     TypeOID           "SNMPv2-SMI::experimental.100.2.6"
+     TypeInstanceOID   "SNMPv2-SMI::experimental.100.2.7"
+     DataSourceOID     "SNMPv2-SMI::experimental.100.2.8"
+     ValueOID          "SNMPv2-SMI::experimental.100.2.9"
+     MessageOID        "SNMPv2-SMI::experimental.100.2.10"
+   </OIDs>
+   <Target localhost>
+     Address "localhost:162"
+     Version 2
+     Community "public"
+     OIDs collectd
+     SessionReuse true
+   </Target>
+ </Plugin>
+
+The plugin's configuration consists of a number of B<OIDs> and B<Target> blocks.
+
+=head3 B<OIDs> blocks
+
+The B<OIDs> block configure the list of object identifiers to send in the
+B<SNMP> B<Trap>. There are sent in the order show.
+They are identified by the name that is given in the opening line of the block.
+
+=over 4
+
+=item B<EnterpriseOID> I<OID>
+
+Set the Enterprise I<OID>, used in B<SNMP> version 1.
+
+=item B<TrapOID> I<OID>
+
+Set the Trap I<OID>, used in B<SNMP> version 2.
+
+=item B<TimeStampOID> I<OID>
+
+Set the I<OID> for the notification timestamp.
+
+=item B<SeverityOID> I<OID>
+
+Set the I<OID> for the notification severity.
+
+=item B<HostOID> I<OID>
+
+Set the I<OID> for the notification host.
+
+=item B<PluginOID> I<OID>
+
+Set the I<OID> for the notification plugin.
+
+=item B<PluginInstanceOID> I<OID>
+
+Set the I<OID> for the notification plugin instance.
+
+=item B<TypeOID> I<OID>
+
+Set the I<OID> for the notification type.
+
+=item B<TypeInstanceOID> I<OID>
+
+Set the I<OID> for the notification type instance.
+
+=item B<DataSourceOID> I<OID>
+
+Set the I<OID> for the notification data source.
+
+=item B<ValueOID> I<OID>
+
+Set the I<OID> for the notification value of the data source.
+
+=item B<MessageOID> I<OID>
+
+Set the I<OID> for the notification message.
+
+=back
+
+=head3 B<Target> blocks
+
+The B<Target> block configure the destination of the B<SNMP> B<Trap> and
+which OIDs should be send in the trap.
+They are identified by the name that is given in the opening line of the block.
+
+=over 4
+
+=item B<Address> I<address>
+
+Set the address of the target to connect to. The default protocol is udp and
+the port is 161. See the L<snmpcmd(1)> manual page for more details.
+
+=item B<Version> I<1|2>
+
+Set the SNMP version to use. When giving B<2> version C<2c> is actually used.
+Version 3 is not supported by this plugin.
+
+=item B<Community> I<comunity>
+
+Pass the I<Community> to the target.
+
+=item B<OIDs> I<name>
+
+Defines which OIDs are used in the Trap. I<name> refers to one of the B<OIDs>
+block above. Since the config file is read top-down you need to define the data
+before using it here.
+
+If option B<OIDs> is not specified the default values defined in the plugin
+are used.
+
+=item B<SessionReuse> B<true>|B<false>
+
+Keep SNMP session open between notifications send.
+
+=back
+
 =head2 Plugin C<ntpd>
 
 The C<ntpd> plugin collects per-peer ntp data such as time offset and time
@@ -6694,6 +7029,241 @@ C<c_rehash /path/to/certs/folder>
 
 The B<ConnectTimeout> option sets the connect timeout, in milliseconds.
 By default, the configured B<Interval> is used to set the timeout.
+
+=back
+
+=head2 Plugin C<odbc>
+
+This plugin uses the B<unixodbc> library (L<http://www.unixodbc.org>) to
+connect to various databases, execute I<SQL> statements and read back the
+results. You can configure how each column is to be interpreted and the
+plugin will generate one or more data sets from each row returned according
+to these rules.
+
+Because the plugin is very generic, the configuration is a little more complex
+than those of other plugins. It usually looks something like this:
+
+  <Plugin odbc>
+    <Query "out_of_stock">
+      Statement "SELECT category, COUNT(*) AS value FROM products WHERE in_stock = 0 GROUP BY category"
+      # Use with MySQL 5.0.0 or later
+      MinVersion 50000
+      <Result>
+        Type "gauge"
+        InstancePrefix "out_of_stock"
+        InstancesFrom "category"
+        ValuesFrom "value"
+      </Result>
+    </Query>
+    <Database "product_information">
+      Interval 120
+      Connection "Server=localhost;Port=1234;Database=prod_info;Uid=collectd;Pwd=aZo6daiw;"
+      PingQuery "SELECT 1"
+      Query "out_of_stock"
+    </Database>
+  </Plugin>
+
+The configuration above defines one query with one result and one database. The
+query is then linked to the database with the B<Query> option I<within> the
+B<E<lt>DatabaseE<gt>> block. You can have any number of queries and databases
+and you can also use the B<Include> statement to split up the configuration
+file in multiple, smaller files. However, the B<E<lt>QueryE<gt>> block I<must>
+precede the B<E<lt>DatabaseE<gt>> blocks, because the file is interpreted from
+top to bottom!
+
+The following is a complete list of options:
+
+=head3 B<Query> blocks
+
+Query blocks define I<SQL> statements and how the returned data should be
+interpreted. They are identified by the name that is given in the opening line
+of the block. Thus the name needs to be unique. Other than that, the name is
+not used in collectd.
+
+In each B<Query> block, there is one or more B<Result> blocks. B<Result> blocks
+define which column holds which value or instance information. You can use
+multiple B<Result> blocks to create multiple values from one returned row. This
+is especially useful, when queries take a long time and sending almost the same
+query again and again is not desirable.
+
+Example:
+
+  <Query "environment">
+    Statement "select station, temperature, humidity from environment"
+    <Result>
+      Type "temperature"
+      # InstancePrefix "foo"
+      InstancesFrom "station"
+      ValuesFrom "temperature"
+    </Result>
+    <Result>
+      Type "humidity"
+      InstancesFrom "station"
+      ValuesFrom "humidity"
+    </Result>
+  </Query>
+
+The following options are accepted:
+
+=over 4
+
+=item B<Statement> I<SQL>
+
+Sets the statement that should be executed on the server. This is B<not>
+interpreted by collectd, but simply passed to the database server. Therefore,
+the SQL dialect that's used depends on the server collectd is connected to.
+
+The query has to return at least two columns, one for the instance and one
+value. You cannot omit the instance, even if the statement is guaranteed to
+always return exactly one line. In that case, you can usually specify something
+like this:
+
+  Statement "SELECT \"instance\", COUNT(*) AS value FROM table"
+
+(That works with MySQL but may not be valid SQL according to the spec. If you
+use a more strict database server, you may have to select from a dummy table or
+something.)
+
+=item B<MinVersion> I<Version>
+
+=item B<MaxVersion> I<Value>
+
+Only use this query for the specified database version. You can use these
+options to provide multiple queries with the same name but with a slightly
+different syntax. The plugin will use only those queries, where the specified
+minimum and maximum versions fit the version of the database in use.
+
+The database version is determined assuming that each part of the version is
+in the range from B<00> to B<99> and all dots are removed. So version "4.1.2"
+becomes "40102", version "5.0.42" becomes "50042".
+
+B<Warning:> The plugin will use B<all> matching queries, so if you specify
+multiple queries with the same name and B<overlapping> ranges, weird stuff will
+happen. Don't to it! A valid example would be something along these lines:
+
+  MinVersion 40000
+  MaxVersion 49999
+  ...
+  MinVersion 50000
+  MaxVersion 50099
+  ...
+  MinVersion 50100
+  # No maximum
+
+In the above example, there are three ranges that don't overlap. The last one
+goes from version "5.1.0" to infinity, meaning "all later versions". Versions
+before "4.0.0" are not specified.
+
+=item B<Type> I<Type>
+
+The B<type> that's used for each line returned. See L<types.db(5)> for more
+details on how types are defined. In short: A type is a predefined layout of
+data and the number of values and type of values has to match the type
+definition.
+
+If you specify "temperature" here, you need exactly one gauge column. If you
+specify "if_octets", you will need two counter columns. See the B<ValuesFrom>
+setting below.
+
+There must be exactly one B<Type> option inside each B<Result> block.
+
+=item B<InstancePrefix> I<prefix>
+
+Prepends I<prefix> to the type instance. If B<InstancesFrom> (see below) is not
+given, the string is simply copied. If B<InstancesFrom> is given, I<prefix> and
+all strings returned in the appropriate columns are concatenated together,
+separated by dashes I<("-")>.
+
+=item B<InstancesFrom> I<column0> [I<column1> ...]
+
+Specifies the columns whose values will be used to create the "type-instance"
+for each row. If you specify more than one column, the value of all columns
+will be joined together with dashes I<("-")> as separation characters.
+
+The plugin itself does not check whether or not all built instances are
+different. It's your responsibility to assure that each is unique. This is
+especially true, if you do not specify B<InstancesFrom>: B<You> have to make
+sure that only one row is returned in this case.
+
+If neither B<InstancePrefix> nor B<InstancesFrom> is given, the type-instance
+will be empty.
+
+=item B<ValuesFrom> I<column0> [I<column1> ...]
+
+Names the columns whose content is used as the actual data for the data sets
+that are dispatched to the daemon. How many such columns you need is determined
+by the B<Type> setting above. If you specify too many or not enough columns,
+the plugin will complain about that and no data will be submitted to the
+daemon.
+
+The actual data type in the columns is not that important. The plugin will
+automatically cast the values to the right type if it know how to do that. So
+it should be able to handle integer an floating point types, as well as strings
+(if they include a number at the beginning).
+
+There must be at least one B<ValuesFrom> option inside each B<Result> block.
+
+=item B<MetadataFrom> [I<column0> I<column1> ...]
+
+Names the columns whose content is used as metadata for the data sets
+that are dispatched to the daemon.
+
+The actual data type in the columns is not that important. The plugin will
+automatically cast the values to the right type if it know how to do that. So
+it should be able to handle integer an floating point types, as well as strings
+(if they include a number at the beginning).
+
+=back
+
+=head3 B<Database> blocks
+
+Database blocks define a connection to a database and which queries should be
+sent to that database. Since the used "dbi" library can handle a wide variety
+of databases, the configuration is very generic. If in doubt, refer to libdbi's
+documentationE<nbsp>- we stick as close to the terminology used there.
+
+Each database needs a "name" as string argument in the starting tag of the
+block. This name will be used as "PluginInstance" in the values submitted to
+the daemon. Other than that, that name is not used.
+
+=over 4
+
+=item B<Plugin> I<Plugin>
+
+Use I<Plugin> as the plugin name when submitting query results from
+this B<Database>. Defaults to C<dbi>.
+
+=item B<Interval> I<Interval>
+
+Sets the interval (in seconds) in which the values will be collected from this
+database. By default the global B<Interval> setting will be used.
+
+=item B<DSN> I<DSN>
+I<DSN> (Data Source Name)
+
+=item B<User> I<User>
+User to connecto to database
+
+=item B<Password> I<Password>
+User password to connecto to database
+
+=item B<Connection> I<Connection>
+
+Specifies the connection string to use to connect to the database. A connection
+string consists of a series of keyword value pairs separated by semicolons (;).
+The equal sign (=) connects each keyword and its value.
+
+=item B<Query> I<QueryName>
+
+Associates the query named I<QueryName> with this database connection. The
+query needs to be defined I<before> this statement, i.E<nbsp>e. all query
+blocks you want to refer to must be placed above the database block you want to
+refer to them from.
+
+=item B<Host> I<Hostname>
+
+Sets the B<host> field of I<value lists> to I<Hostname> when dispatching
+values. Defaults to the global hostname setting.
 
 =back
 
