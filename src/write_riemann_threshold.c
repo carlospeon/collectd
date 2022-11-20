@@ -195,11 +195,7 @@ int write_riemann_threshold_check(const data_set_t *ds, const value_list_t *vl,
   if (threshold_tree == NULL)
     return 0;
 
-  /* Is this lock really necessary? So far, thresholds are only inserted at
-   * startup. -octo */
-  pthread_mutex_lock(&threshold_lock);
   th = threshold_search(vl);
-  pthread_mutex_unlock(&threshold_lock);
   if (th == NULL)
     return 0;
 

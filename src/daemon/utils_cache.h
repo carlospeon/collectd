@@ -40,10 +40,10 @@
 int uc_init(void);
 int uc_check_timeout(void);
 int uc_update(const data_set_t *ds, const value_list_t *vl);
-int uc_get_rate_by_name(const char *name, gauge_t **ret_values,
+int uc_get_rate_by_name(const char *key, const char *name, gauge_t **ret_values,
                         size_t *ret_values_num);
 gauge_t *uc_get_rate(const data_set_t *ds, const value_list_t *vl);
-int uc_get_value_by_name(const char *name, value_t **ret_values,
+int uc_get_value_by_name(const char *key, const char *name, value_t **ret_values,
                          size_t *ret_values_num);
 value_t *uc_get_value(const data_set_t *ds, const value_list_t *vl);
 
@@ -56,9 +56,11 @@ int uc_get_hits(const value_list_t *vl);
 int uc_set_hits(const value_list_t *vl, int hits);
 int uc_inc_hits(const value_list_t *vl, int step);
 
-int uc_set_callbacks_mask(const char *name, unsigned long callbacks_mask);
+int uc_set_callbacks_mask(const char *key, const char *name, unsigned long callbacks_mask);
 
-int uc_get_history_by_name(const char *name, gauge_t *ret_history,
+int uc_get_history(const data_set_t *ds, const value_list_t *vl,
+                   gauge_t *ret_history, size_t num_steps, size_t num_ds);
+int uc_get_history_by_name(const char *key, const char *name, gauge_t *ret_history,
                            size_t num_steps, size_t num_ds);
 
 /*

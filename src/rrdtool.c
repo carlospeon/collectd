@@ -37,10 +37,13 @@
  * Private types
  */
 typedef struct rrd_cache_s {
+  int values_alloc;
   int values_num;
   char **values;
+  char *type;
   cdtime_t first_value;
   cdtime_t last_value;
+  cdtime_t interval;
   int64_t random_variation;
   enum { FLAG_NONE = 0x00, FLAG_QUEUED = 0x01, FLAG_FLUSHQ = 0x02 } flags;
 } rrd_cache_t;
@@ -50,9 +53,16 @@ typedef enum rrd_queue_dir_e rrd_queue_dir_t;
 
 struct rrd_queue_s {
   char *filename;
+  struct rrd_queue_s *prev;
   struct rrd_queue_s *next;
 };
 typedef struct rrd_queue_s rrd_queue_t;
+
+typedef struct {
+  cdtime_t flush_last;
+  c_avl_tree_t *tree;
+  pthread_mutex_t lock;
+} cache_shard_t;
 
 /*
  * Private variables
@@ -60,7 +70,8 @@ typedef struct rrd_queue_s rrd_queue_t;
 static const char *config_keys[] = {
     "CacheTimeout", "CacheFlush",      "CreateFilesAsync", "DataDir",
     "StepSize",     "HeartBeat",       "RRARows",          "RRATimespan",
-    "XFF",          "WritesPerSecond", "RandomTimeout"};
+    "XFF",          "WritesPerSecond", "RandomTimeout",    "ReportStats",
+    "QueueThreads"};
 static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
 
 /* If datadir is zero, the daemon's basedir is used. If stepsize or heartbeat
@@ -68,6 +79,7 @@ static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
  * being used. */
 static char *datadir;
 static double write_rate;
+static bool rrdtool_config_stats = false;
 static rrdcreate_config_t rrdcreate_config = {
     /* stepsize = */ 0,
     /* heartbeat = */ 0,
@@ -86,19 +98,36 @@ static rrdcreate_config_t rrdcreate_config = {
  * ALWAYS lock `cache_lock' first! */
 static cdtime_t cache_timeout;
 static cdtime_t cache_flush_timeout;
+static int cache_values_size;
 static cdtime_t random_timeout;
-static cdtime_t cache_flush_last;
-static c_avl_tree_t *cache;
-static pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// static cdtime_t cache_flush_last;
+// static c_avl_tree_t *cache;
+// static pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
+
+#define CACHE_SHARDS 31
+static cache_shard_t cache_shard[CACHE_SHARDS];
 
 static rrd_queue_t *queue_head;
 static rrd_queue_t *queue_tail;
+static c_avl_tree_t *queue = NULL;
+static uint64_t queue_length = 0;
 static rrd_queue_t *flushq_head;
 static rrd_queue_t *flushq_tail;
-static pthread_t queue_thread;
-static int queue_thread_running = 1;
+static uint64_t flushq_length = 0;
+static uint64_t queue_threads_num = 1;
+static pthread_t *queue_threads;
+static int  queue_threads_running = 1;
 static pthread_mutex_t queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
+static char **queue_file;
+static pthread_mutex_t queue_file_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  queue_file_cond = PTHREAD_COND_INITIALIZER;
+
+static uint64_t flush_count = 0;
+static uint64_t flush_full_count = 0;
+static pthread_mutex_t rrdtool_update_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t rrdtool_update_count = 0;
 
 #if !HAVE_THREADSAFE_LIBRRD
 static pthread_mutex_t librrd_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -106,25 +135,32 @@ static pthread_mutex_t librrd_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int do_shutdown;
 
+static inline cache_shard_t *rrd_cache_shard(const char *str)
+{
+  unsigned long hash = 5381;
+  int c;
+
+  while ((c = *str++))
+      hash = ((hash << 5) + hash) + c;
+
+  return &cache_shard[hash%CACHE_SHARDS];
+}
+
 #if HAVE_THREADSAFE_LIBRRD
-static int srrd_update(char *filename, char *template, int argc,
-                       const char **argv) {
+static inline int srrd_update(char *filename, char *template, int argc,
+                              const char **argv) {
   optind = 0; /* bug in librrd? */
   rrd_clear_error();
 
   int status = rrd_update_r(filename, template, argc, (void *)argv);
-  if (status != 0) {
-    WARNING("rrdtool plugin: rrd_update_r (%s) failed: %s", filename,
-            rrd_get_error());
-  }
 
   return status;
 } /* int srrd_update */
-  /* #endif HAVE_THREADSAFE_LIBRRD */
+/* #endif HAVE_THREADSAFE_LIBRRD */
 
 #else  /* !HAVE_THREADSAFE_LIBRRD */
-static int srrd_update(char *filename, char *template, int argc,
-                       const char **argv) {
+static inline int srrd_update(char *filename, char *template, int argc,
+                              const char **argv) {
   int status;
 
   int new_argc;
@@ -152,16 +188,52 @@ static int srrd_update(char *filename, char *template, int argc,
   status = rrd_update(new_argc, new_argv);
   pthread_mutex_unlock(&librrd_lock);
 
-  if (status != 0) {
-    WARNING("rrdtool plugin: rrd_update_r failed: %s: %s", filename,
-            rrd_get_error());
-  }
-
   sfree(new_argv);
 
   return status;
 } /* int srrd_update */
 #endif /* !HAVE_THREADSAFE_LIBRRD */
+
+static int srrd_upsert(char *filename, char *template, int argc,
+                       const char **argv, const char *type, cdtime_t value_time,
+                       cdtime_t interval) {
+
+  int status = srrd_update(filename, template, argc, argv);
+  if (status == 0) {
+    return status;
+  }
+
+  struct stat statbuf = {0};
+  status = stat(filename, &statbuf);
+  if (status >= 0) {
+    if (!S_ISREG(statbuf.st_mode)) {
+      ERROR("rrdtool plugin: stat(%s): Not a regular file!", filename);
+    } else {
+      WARNING("rrdtool plugin: rrd_update (%s) failed: %s", filename,
+              rrd_get_error());
+    }
+    return -1;
+  }
+
+  if (errno != ENOENT) {
+    ERROR("rrdtool plugin: stat(%s) failed: %s", filename, STRERRNO);
+    return -1;
+  }
+
+  if (cu_rrd_create_file(filename, type, value_time, interval,
+                         &rrdcreate_config) != 0) {
+    ERROR("rrdtool plugin: cu_rrd_create_file (%s) failed.", filename);
+    return -1;
+  }
+
+  status = srrd_update(filename, template, argc, argv);
+  if (status != 0) {
+    WARNING("rrdtool plugin: rrd_update (%s) failed: %s", filename,
+            rrd_get_error());
+  }
+
+  return status;
+}
 
 static int value_list_to_string_multiple(char *buffer, int buffer_len,
                                          const data_set_t *ds,
@@ -279,6 +351,51 @@ static int value_list_to_filename(char *buffer, size_t buffer_size,
   return 0;
 } /* int value_list_to_filename */
 
+static int rrd_queue_lock_file (char *filename) /* {{{ */
+{
+  int n;
+
+  pthread_mutex_lock (&queue_file_lock);
+try:
+  for (n =0 ; n < queue_threads_num; n++) {
+    if(queue_file[n] != NULL && 
+       strcmp (filename, queue_file[n]) == 0) {
+      pthread_cond_wait(&queue_file_cond, &queue_file_lock);
+      goto try;
+    }
+  }
+
+  for (n=0; n < queue_threads_num ; n++) {
+    if (queue_file[n] == NULL) {
+      queue_file[n] = filename;
+      break;
+    }
+  }
+
+  pthread_mutex_unlock (&queue_file_lock);
+  return (0);
+} /* }}} int rrd_queue_lock_file */
+
+static int rrd_queue_unlock_file (char *filename) /* {{{ */
+{
+  int status;
+  int n;
+
+  pthread_mutex_lock (&queue_file_lock);
+
+  status = ENOENT;
+  for (n =0 ; n < queue_threads_num; n++) {
+    if(queue_file[n] == filename) {
+            queue_file[n] = NULL;
+            status = 0;
+            pthread_cond_signal (&queue_file_cond);
+            break;
+    }
+  }
+  pthread_mutex_unlock (&queue_file_lock);
+  return (status);
+} /* }}} int rrd_queue_unlock_file */
+
 static void *rrd_queue_thread(void __attribute__((unused)) * data) {
   struct timeval tv_next_update;
   struct timeval tv_now;
@@ -291,6 +408,9 @@ static void *rrd_queue_thread(void __attribute__((unused)) * data) {
     char **values;
     int values_num;
     int status;
+    char type[DATA_MAX_NAME_LEN];
+    cdtime_t value_time;
+    cdtime_t interval;
 
     values = NULL;
     values_num = 0;
@@ -348,39 +468,59 @@ static void *rrd_queue_thread(void __attribute__((unused)) * data) {
     if (flushq_head != NULL) {
       /* Dequeue the first flush entry */
       queue_entry = flushq_head;
-      if (flushq_head == flushq_tail)
+      if (flushq_head == flushq_tail) {
         flushq_head = flushq_tail = NULL;
-      else
+      } else {
         flushq_head = flushq_head->next;
+        if (flushq_head != NULL)
+          flushq_head->prev = NULL;
+      }
+      flushq_length--;
     } else /* if (queue_head != NULL) */
     {
       /* Dequeue the first regular entry */
       queue_entry = queue_head;
-      if (queue_head == queue_tail)
+      if (queue_head == queue_tail) {
         queue_head = queue_tail = NULL;
-      else
+      } else {
         queue_head = queue_head->next;
+        if (queue_head != NULL)
+          queue_head->prev = NULL;
+      }
+
+      if (c_avl_remove (queue, queue_entry->filename, NULL, NULL) != 0) {
+        ERROR ("rrdtool plugin: c_avl_remove (%s) failed.", 
+                queue_entry->filename);
+      }
+
+      queue_length--;
     }
 
     /* Unlock the queue again */
     pthread_mutex_unlock(&queue_lock);
 
+
+    cache_shard_t *shard = rrd_cache_shard(queue_entry->filename);
     /* We now need the cache lock so the entry isn't updated while
      * we make a copy of its values */
-    pthread_mutex_lock(&cache_lock);
+    pthread_mutex_lock(&shard->lock);
 
-    status = c_avl_get(cache, queue_entry->filename, (void *)&cache_entry);
+    status = c_avl_get(shard->tree, queue_entry->filename, (void *)&cache_entry);
 
     if (status == 0) {
       values = cache_entry->values;
       values_num = cache_entry->values_num;
+      sstrncpy(type, cache_entry->type, sizeof(type));
+      value_time = cache_entry->first_value;
+      interval = cache_entry->interval;
 
       cache_entry->values = NULL;
       cache_entry->values_num = 0;
+      cache_entry->values_alloc = 0;
       cache_entry->flags = FLAG_NONE;
     }
 
-    pthread_mutex_unlock(&cache_lock);
+    pthread_mutex_unlock(&shard->lock);
 
     if (status != 0) {
       sfree(queue_entry->filename);
@@ -400,10 +540,17 @@ static void *rrd_queue_thread(void __attribute__((unused)) * data) {
       }
     }
 
+    rrd_queue_lock_file(queue_entry->filename);
     /* Write the values to the RRD-file */
-    srrd_update(queue_entry->filename, NULL, values_num, (const char **)values);
+    srrd_upsert(queue_entry->filename, NULL, values_num, (const char **)values,
+                type, value_time, interval);
     DEBUG("rrdtool plugin: queue thread: Wrote %i value%s to %s", values_num,
           (values_num == 1) ? "" : "s", queue_entry->filename);
+    rrd_queue_unlock_file(queue_entry->filename);
+
+    pthread_mutex_lock (&rrdtool_update_lock);
+    rrdtool_update_count++;
+    pthread_mutex_unlock (&rrdtool_update_lock);
 
     for (int i = 0; i < values_num; i++) {
       sfree(values[i]);
@@ -417,8 +564,9 @@ static void *rrd_queue_thread(void __attribute__((unused)) * data) {
   return (void *)0;
 } /* void *rrd_queue_thread */
 
-static int rrd_queue_enqueue(const char *filename, rrd_queue_t **head,
-                             rrd_queue_t **tail) {
+static int rrd_queue_enqueue(const char *filename, c_avl_tree_t *tree,
+                             rrd_queue_t **head, rrd_queue_t **tail,
+                             uint64_t *length) {
   rrd_queue_t *queue_entry;
 
   queue_entry = malloc(sizeof(*queue_entry));
@@ -432,14 +580,32 @@ static int rrd_queue_enqueue(const char *filename, rrd_queue_t **head,
   }
 
   queue_entry->next = NULL;
+  queue_entry->prev = NULL;
 
   pthread_mutex_lock(&queue_lock);
 
-  if (*tail == NULL)
+  if (tree != NULL) {
+    if (c_avl_get (tree, filename, NULL) == 0) {
+      ERROR ("rrdtool plugin: dup queue value (%s)", filename);
+      sfree (queue_entry->filename);
+      sfree (queue_entry);
+      pthread_mutex_unlock (&queue_lock);
+      return -1;
+    }
+    c_avl_insert (tree, queue_entry->filename, queue_entry);
+  }
+
+  if (*tail == NULL) {
+    if (*head != NULL)
+      ERROR ("rrdtool plugin: head is not null");
     *head = queue_entry;
-  else
+  } else {
     (*tail)->next = queue_entry;
+    queue_entry->prev = *tail;
+  }
   *tail = queue_entry;
+
+  (*length)++;
 
   pthread_cond_signal(&queue_cond);
   pthread_mutex_unlock(&queue_lock);
@@ -447,22 +613,15 @@ static int rrd_queue_enqueue(const char *filename, rrd_queue_t **head,
   return 0;
 } /* int rrd_queue_enqueue */
 
-static int rrd_queue_dequeue(const char *filename, rrd_queue_t **head,
-                             rrd_queue_t **tail) {
-  rrd_queue_t *this;
-  rrd_queue_t *prev;
+static int rrd_queue_dequeue(const char *filename, c_avl_tree_t *tree,
+                             rrd_queue_t **head, rrd_queue_t **tail,
+                             uint64_t *length) {
+  rrd_queue_t *this = NULL;
 
   pthread_mutex_lock(&queue_lock);
 
-  prev = NULL;
-  this = *head;
-
-  while (this != NULL) {
-    if (strcmp(this->filename, filename) == 0)
-      break;
-
-    prev = this;
-    this = this->next;
+  if (tree != NULL) {
+    c_avl_get (tree, filename, (void *) &this);
   }
 
   if (this == NULL) {
@@ -470,13 +629,33 @@ static int rrd_queue_dequeue(const char *filename, rrd_queue_t **head,
     return -1;
   }
 
-  if (prev == NULL)
+  if (this->prev == NULL) {
+    if (this != *head) 
+      ERROR ("rrdtool plugin: head != this");
     *head = this->next;
-  else
-    prev->next = this->next;
+    if (*head != NULL)
+      (*head)->prev = NULL;
+  } else {
+    (this->prev)->next = this->next;
+  }
 
-  if (this->next == NULL)
-    *tail = prev;
+  if (this->next == NULL) {
+    if (this != *tail) 
+      ERROR ("rrdtool plugin: tail != this");
+    *tail = this->prev;
+    if (*tail != NULL)
+      (*tail)->next = NULL;
+  } else {
+    (this->next)->prev = this->prev;
+  }
+
+  if (tree != NULL) { 
+    if (c_avl_remove (tree, filename, NULL, NULL) != 0) {
+      ERROR ("rrdtool plugin: c_avl_remove (%s) failed.", filename);
+    }
+  }
+
+  (*length)--;
 
   pthread_mutex_unlock(&queue_lock);
 
@@ -487,7 +666,7 @@ static int rrd_queue_dequeue(const char *filename, rrd_queue_t **head,
 } /* int rrd_queue_dequeue */
 
 /* XXX: You must hold "cache_lock" when calling this function! */
-static void rrd_cache_flush(cdtime_t timeout) {
+static void rrd_cache_flush(cache_shard_t *shard, cdtime_t timeout) {
   rrd_cache_t *rc;
   cdtime_t now;
 
@@ -503,7 +682,7 @@ static void rrd_cache_flush(cdtime_t timeout) {
   now = cdtime();
 
   /* Build a list of entries to be flushed */
-  iter = c_avl_get_iterator(cache);
+  iter = c_avl_get_iterator(shard->tree);
   while (c_avl_iterator_next(iter, (void *)&key, (void *)&rc) == 0) {
     if (rc->flags != FLAG_NONE)
       continue;
@@ -513,7 +692,8 @@ static void rrd_cache_flush(cdtime_t timeout) {
     else if (rc->values_num > 0) {
       int status;
 
-      status = rrd_queue_enqueue(key, &queue_head, &queue_tail);
+      status = rrd_queue_enqueue(key, queue, &queue_head,
+                                 &queue_tail, &queue_length);
       if (status == 0)
         rc->flags = FLAG_QUEUED;
     } else /* ancient and no values -> waste of memory */
@@ -533,14 +713,14 @@ static void rrd_cache_flush(cdtime_t timeout) {
   c_avl_iterator_destroy(iter);
 
   for (int i = 0; i < keys_num; i++) {
-    if (c_avl_remove(cache, keys[i], (void *)&key, (void *)&rc) != 0) {
+    if (c_avl_remove(shard->tree, keys[i], (void *)&key, (void *)&rc) != 0) {
       DEBUG("rrdtool plugin: c_avl_remove (%s) failed.", keys[i]);
       continue;
     }
 
     assert(rc->values == NULL);
     assert(rc->values_num == 0);
-
+    sfree(rc->type);
     sfree(rc);
     sfree(key);
     keys[i] = NULL;
@@ -548,30 +728,17 @@ static void rrd_cache_flush(cdtime_t timeout) {
 
   sfree(keys);
 
-  cache_flush_last = now;
+  shard->flush_last = now;
 } /* void rrd_cache_flush */
 
-static int rrd_cache_flush_identifier(cdtime_t timeout,
-                                      const char *identifier) {
+static int rrd_cache_flush_identifier(cache_shard_t *shard, cdtime_t timeout, const char *key) {
   rrd_cache_t *rc;
   cdtime_t now;
   int status;
-  char key[2048];
-
-  if (identifier == NULL) {
-    rrd_cache_flush(timeout);
-    return 0;
-  }
 
   now = cdtime();
 
-  if (datadir == NULL)
-    ssnprintf(key, sizeof(key), "%s.rrd", identifier);
-  else
-    ssnprintf(key, sizeof(key), "%s/%s.rrd", datadir, identifier);
-  key[sizeof(key) - 1] = '\0';
-
-  status = c_avl_get(cache, key, (void *)&rc);
+  status = c_avl_get(shard->tree, key, (void *)&rc);
   if (status != 0) {
     INFO("rrdtool plugin: rrd_cache_flush_identifier: "
          "c_avl_get (%s) failed. Does that file really exist?",
@@ -579,17 +746,21 @@ static int rrd_cache_flush_identifier(cdtime_t timeout,
     return status;
   }
 
+  flush_count++;
+ 
   if (rc->flags == FLAG_FLUSHQ) {
     status = 0;
   } else if (rc->flags == FLAG_QUEUED) {
-    rrd_queue_dequeue(key, &queue_head, &queue_tail);
-    status = rrd_queue_enqueue(key, &flushq_head, &flushq_tail);
+    rrd_queue_dequeue (key, queue, &queue_head, &queue_tail, &queue_length);
+    status = rrd_queue_enqueue (key, NULL, &flushq_head,
+                                &flushq_tail, &flushq_length);
     if (status == 0)
       rc->flags = FLAG_FLUSHQ;
   } else if ((now - rc->first_value) < timeout) {
     status = 0;
   } else if (rc->values_num > 0) {
-    status = rrd_queue_enqueue(key, &flushq_head, &flushq_tail);
+    status = rrd_queue_enqueue (key, NULL, &flushq_head,
+                                &flushq_tail, &flushq_length);
     if (status == 0)
       rc->flags = FLAG_FLUSHQ;
   }
@@ -605,33 +776,52 @@ static int64_t rrd_get_random_variation(void) {
 } /* int64_t rrd_get_random_variation */
 
 static int rrd_cache_insert(const char *filename, const char *value,
-                            cdtime_t value_time) {
+                            const char *type, cdtime_t value_time,
+                            cdtime_t interval) {
   rrd_cache_t *rc = NULL;
   int new_rc = 0;
   char **values_new;
 
-  pthread_mutex_lock(&cache_lock);
+  cache_shard_t *shard = rrd_cache_shard(filename);
+
+  pthread_mutex_lock(&shard->lock);
 
   /* This shouldn't happen, but it did happen at least once, so we'll be
    * careful. */
-  if (cache == NULL) {
-    pthread_mutex_unlock(&cache_lock);
+  if (shard->tree == NULL) {
+    pthread_mutex_unlock(&shard->lock);
     WARNING("rrdtool plugin: cache == NULL.");
     return -1;
   }
 
-  int status = c_avl_get(cache, filename, (void *)&rc);
+  int status = c_avl_get(shard->tree, filename, (void *)&rc);
   if ((status != 0) || (rc == NULL)) {
     rc = malloc(sizeof(*rc));
     if (rc == NULL) {
       ERROR("rrdtool plugin: malloc failed: %s", STRERRNO);
-      pthread_mutex_unlock(&cache_lock);
+      pthread_mutex_unlock(&shard->lock);
       return -1;
     }
     rc->values_num = 0;
-    rc->values = NULL;
+    rc->values_alloc = cache_values_size;
+    rc->values = calloc(rc->values_alloc, sizeof(char *));
+    if (rc->values == NULL) {
+      sfree(rc);
+      ERROR("rrdtool plugin: malloc failed: %s", STRERRNO);
+      pthread_mutex_unlock(&shard->lock);
+      return -1;
+    }
+    rc->type = strdup(type);
+    if (rc->type == NULL) {
+      sfree(rc->values);
+      sfree(rc);
+      ERROR("rrdtool plugin: strdup failed: %s", STRERRNO);
+      pthread_mutex_unlock(&shard->lock);
+      return -1;
+    }
     rc->first_value = 0;
     rc->last_value = 0;
+    rc->interval = interval;
     rc->random_variation = rrd_get_random_variation();
     rc->flags = FLAG_NONE;
     new_rc = 1;
@@ -639,29 +829,36 @@ static int rrd_cache_insert(const char *filename, const char *value,
 
   assert(value_time > 0); /* plugin_dispatch() ensures this. */
   if (rc->last_value >= value_time) {
-    pthread_mutex_unlock(&cache_lock);
+    pthread_mutex_unlock(&shard->lock);
     DEBUG("rrdtool plugin: (rc->last_value = %" PRIu64 ") "
           ">= (value_time = %" PRIu64 ")",
           rc->last_value, value_time);
     return -1;
   }
 
-  values_new =
-      realloc((void *)rc->values, (rc->values_num + 1) * sizeof(char *));
-  if (values_new == NULL) {
-    void *cache_key = NULL;
+  if (rc->values_num + 1 >= rc->values_alloc) {
+    int values_alloc = rc->values_alloc * 2;
+    if (values_alloc == 0) {
+      values_alloc = cache_values_size;
+    }
+    values_new = realloc((void *)rc->values, values_alloc * sizeof(char *));
+    if (values_new == NULL) {
+      void *cache_key = NULL;
 
-    c_avl_remove(cache, filename, &cache_key, NULL);
-    pthread_mutex_unlock(&cache_lock);
+      c_avl_remove(shard->tree, filename, &cache_key, NULL);
+      pthread_mutex_unlock(&shard->lock);
 
-    ERROR("rrdtool plugin: realloc failed: %s", STRERRNO);
+      ERROR("rrdtool plugin: realloc failed: %s", STRERRNO);
 
-    sfree(cache_key);
-    sfree(rc->values);
-    sfree(rc);
-    return -1;
+      sfree(cache_key);
+      sfree(rc->type);
+      sfree(rc->values);
+      sfree(rc);
+      return -1;
+    }
+    rc->values = values_new;
+    rc->values_alloc = values_alloc;
   }
-  rc->values = values_new;
 
   rc->values[rc->values_num] = strdup(value);
   if (rc->values[rc->values_num] != NULL)
@@ -676,17 +873,18 @@ static int rrd_cache_insert(const char *filename, const char *value,
     void *cache_key = strdup(filename);
 
     if (cache_key == NULL) {
-      pthread_mutex_unlock(&cache_lock);
+      pthread_mutex_unlock(&shard->lock);
 
       ERROR("rrdtool plugin: strdup failed: %s", STRERRNO);
 
       sfree(rc->values[0]);
+      sfree(rc->type);
       sfree(rc->values);
       sfree(rc);
       return -1;
     }
 
-    c_avl_insert(cache, cache_key, rc);
+    c_avl_insert(shard->tree, cache_key, rc);
   }
 
   DEBUG("rrdtool plugin: rrd_cache_insert: file = %s; "
@@ -701,7 +899,9 @@ static int rrd_cache_insert(const char *filename, const char *value,
     if (rc->flags == FLAG_NONE) {
       int status;
 
-      status = rrd_queue_enqueue(filename, &queue_head, &queue_tail);
+      status = rrd_queue_enqueue(filename, queue, &queue_head,
+                                  &queue_tail, &queue_length);
+
       if (status == 0)
         rc->flags = FLAG_QUEUED;
 
@@ -712,10 +912,10 @@ static int rrd_cache_insert(const char *filename, const char *value,
   }
 
   if ((cache_timeout > 0) &&
-      ((cdtime() - cache_flush_last) > cache_flush_timeout))
-    rrd_cache_flush(cache_timeout + random_timeout);
+      ((cdtime() - shard->flush_last) > cache_flush_timeout))
+    rrd_cache_flush(shard, cache_timeout + random_timeout);
 
-  pthread_mutex_unlock(&cache_lock);
+  pthread_mutex_unlock(&shard->lock);
 
   return 0;
 } /* int rrd_cache_insert */
@@ -727,43 +927,47 @@ static int rrd_cache_destroy(void) /* {{{ */
 
   int non_empty = 0;
 
-  pthread_mutex_lock(&cache_lock);
+  for (int i=0; i < CACHE_SHARDS; i++) {
+    pthread_mutex_lock(&cache_shard[i].lock);
 
-  if (cache == NULL) {
-    pthread_mutex_unlock(&cache_lock);
-    return 0;
+    if (&cache_shard[i].tree == NULL) {
+      pthread_mutex_unlock(&cache_shard[i].lock);
+      return 0;
+    }
+
+    while (c_avl_pick(cache_shard[i].tree, &key, &value) == 0) {
+      rrd_cache_t *rc;
+
+      sfree(key);
+      key = NULL;
+
+      rc = value;
+      value = NULL;
+
+      if (rc->values_num > 0)
+        non_empty++;
+
+      for (int i = 0; i < rc->values_num; i++)
+        sfree(rc->values[i]);
+      sfree(rc->values);
+      sfree(rc->type);
+      sfree(rc);
+    }
+
+    c_avl_destroy(cache_shard[i].tree);
+    cache_shard[i].tree = NULL;
+
+    if (non_empty > 0) {
+      INFO("rrdtool plugin: %i cache %s had values when destroying the cache.",
+           non_empty, (non_empty == 1) ? "entry" : "entries");
+    } else {
+      DEBUG("rrdtool plugin: No values have been lost "
+            "when destroying the cache.");
+    }
+
+    pthread_mutex_unlock(&cache_shard[i].lock);
   }
 
-  while (c_avl_pick(cache, &key, &value) == 0) {
-    rrd_cache_t *rc;
-
-    sfree(key);
-    key = NULL;
-
-    rc = value;
-    value = NULL;
-
-    if (rc->values_num > 0)
-      non_empty++;
-
-    for (int i = 0; i < rc->values_num; i++)
-      sfree(rc->values[i]);
-    sfree(rc->values);
-    sfree(rc);
-  }
-
-  c_avl_destroy(cache);
-  cache = NULL;
-
-  if (non_empty > 0) {
-    INFO("rrdtool plugin: %i cache %s had values when destroying the cache.",
-         non_empty, (non_empty == 1) ? "entry" : "entries");
-  } else {
-    DEBUG("rrdtool plugin: No values have been lost "
-          "when destroying the cache.");
-  }
-
-  pthread_mutex_unlock(&cache_lock);
   return 0;
 } /* }}} int rrd_cache_destroy */
 
@@ -802,41 +1006,114 @@ static int rrd_write(const data_set_t *ds, const value_list_t *vl,
     return -1;
   }
 
-  struct stat statbuf = {0};
-  if (stat(filename, &statbuf) == -1) {
-    if (errno == ENOENT) {
-      if (cu_rrd_create_file(filename, ds, vl, &rrdcreate_config) != 0) {
-        ERROR("rrdtool plugin: cu_rrd_create_file (%s) failed.", filename);
-        return -1;
-      } else if (rrdcreate_config.async) {
-        return 0;
-      }
-    } else {
-      ERROR("rrdtool plugin: stat(%s) failed: %s", filename, STRERRNO);
-      return -1;
-    }
-  } else if (!S_ISREG(statbuf.st_mode)) {
-    ERROR("rrdtool plugin: stat(%s): Not a regular file!", filename);
-    return -1;
-  }
-
-  return rrd_cache_insert(filename, values, vl->time);
+  return rrd_cache_insert(filename, values, vl->type, vl->time, vl->interval);
 } /* int rrd_write */
 
 static int rrd_flush(cdtime_t timeout, const char *identifier,
                      __attribute__((unused)) user_data_t *user_data) {
-  pthread_mutex_lock(&cache_lock);
 
-  if (cache == NULL) {
-    pthread_mutex_unlock(&cache_lock);
+  if (identifier == NULL) {
+    for (int i = 0; i < CACHE_SHARDS; i++) {
+      pthread_mutex_lock(&cache_shard[i].lock);
+      rrd_cache_flush(&cache_shard[i], timeout);
+      pthread_mutex_unlock(&cache_shard[i].lock);
+    }
+    flush_full_count++;
     return 0;
   }
 
-  rrd_cache_flush_identifier(timeout, identifier);
+  char key[2048];
+  if (datadir == NULL)
+    ssnprintf(key, sizeof(key), "%s.rrd", identifier);
+  else
+    ssnprintf(key, sizeof(key), "%s/%s.rrd", datadir, identifier);
+  key[sizeof(key) - 1] = '\0';
 
-  pthread_mutex_unlock(&cache_lock);
+  cache_shard_t *shard = rrd_cache_shard(key);
+
+  pthread_mutex_lock(&shard->lock);
+
+  if (shard->tree == NULL) {
+    pthread_mutex_unlock(&shard->lock);
+    return 0;
+  }
+
+  rrd_cache_flush_identifier(shard, timeout, key);
+
+  pthread_mutex_unlock(&shard->lock);
   return 0;
 } /* int rrd_flush */
+
+static int rrd_stats_read (void)
+{
+  gauge_t copy_queue_length;
+  gauge_t copy_flushq_length;
+  gauge_t copy_cache_size;
+  derive_t copy_flush_count;
+  derive_t copy_flush_full_count; 
+  derive_t copy_rrdtool_update_count; 
+
+  value_list_t vl = VALUE_LIST_INIT;
+  value_t values[1];
+
+  copy_queue_length = (gauge_t) queue_length;
+  copy_flushq_length = (gauge_t) flushq_length;
+  copy_flush_count = (derive_t) flush_count;
+  copy_flush_full_count = (derive_t) flush_full_count;
+  copy_rrdtool_update_count = (derive_t) rrdtool_update_count;
+
+  copy_cache_size = 0;
+  for (int i=0; i < CACHE_SHARDS; i++) {
+    pthread_mutex_lock (&cache_shard[i].lock);
+    copy_cache_size += (gauge_t) c_avl_size(cache_shard[i].tree);
+    pthread_mutex_unlock (&cache_shard[i].lock);
+  }
+
+  /* Initialize `vl' */
+  vl.values = values;
+  vl.values_len = 1;
+  vl.time = 0;
+  sstrncpy (vl.host, hostname_g, sizeof (vl.host));
+  sstrncpy (vl.plugin, "rrdtool", sizeof (vl.plugin));
+
+  /* queue length */
+  vl.values[0].gauge = (gauge_t) copy_queue_length;
+  sstrncpy (vl.type, "queue_length", sizeof (vl.type));
+  vl.type_instance[0] = 0;
+  plugin_dispatch_values (&vl);
+
+  /* flush queue length */
+  vl.values[0].gauge = (gauge_t) copy_flushq_length;
+  sstrncpy (vl.type, "queue_length", sizeof (vl.type));
+  sstrncpy (vl.type_instance, "flush", sizeof (vl.type_instance));
+  plugin_dispatch_values (&vl);
+
+  /* cache size */
+  vl.values[0].gauge = (gauge_t) copy_cache_size;
+  sstrncpy (vl.type, "cache_size", sizeof (vl.type));
+  vl.type_instance[0] = 0;
+  plugin_dispatch_values (&vl);
+
+  /* flush count */
+  vl.values[0].derive = (derive_t) copy_flush_count;
+  sstrncpy (vl.type, "derive", sizeof (vl.type));
+  sstrncpy (vl.type_instance, "flush", sizeof (vl.type_instance));
+  plugin_dispatch_values (&vl);
+
+  /* flush full count */
+  vl.values[0].derive = (derive_t) copy_flush_full_count;
+  sstrncpy (vl.type, "derive", sizeof (vl.type));
+  sstrncpy (vl.type_instance, "flush_full", sizeof (vl.type_instance));
+  plugin_dispatch_values (&vl);
+
+  /* rrdtool update count */
+  vl.values[0].derive = (derive_t) copy_rrdtool_update_count; 
+  sstrncpy (vl.type, "derive", sizeof (vl.type));
+  sstrncpy (vl.type_instance, "rrdtool_update", sizeof (vl.type_instance));
+  plugin_dispatch_values (&vl);
+
+  return (0);
+} /* int rrd_stats_read */
 
 static int rrd_config(const char *key, const char *value) {
   if (strcasecmp("CacheTimeout", key) == 0) {
@@ -894,11 +1171,6 @@ static int rrd_config(const char *key, const char *value) {
     int temp = atoi(value);
     if (temp > 0)
       rrdcreate_config.heartbeat = temp;
-  } else if (strcasecmp("CreateFilesAsync", key) == 0) {
-    if (IS_TRUE(value))
-      rrdcreate_config.async = 1;
-    else
-      rrdcreate_config.async = 0;
   } else if (strcasecmp("RRARows", key) == 0) {
     int tmp = atoi(value);
     if (tmp <= 0) {
@@ -978,6 +1250,21 @@ static int rrd_config(const char *key, const char *value) {
     } else {
       random_timeout = DOUBLE_TO_CDTIME_T(tmp);
     }
+  } else if (strcasecmp ("ReportStats", key) == 0) {
+    if (IS_TRUE (value))
+      rrdtool_config_stats = true;
+    else
+      rrdtool_config_stats = false;
+  } else if (strcasecmp ("QueueThreads", key) == 0) {
+    int tmp = atoi (value);
+    if (tmp <= 0) {
+      fprintf (stderr, "rrdtool: `QueueThreads' must "
+                      "be greater than 0.\n");
+      ERROR ("rrdtool: `QueueThreads' must "
+                      "be greater than 0.\n");
+      return (1);
+    }
+    queue_threads_num = tmp;
   } else {
     return -1;
   }
@@ -985,38 +1272,52 @@ static int rrd_config(const char *key, const char *value) {
 } /* int rrd_config */
 
 static int rrd_shutdown(void) {
-  pthread_mutex_lock(&cache_lock);
-  rrd_cache_flush(0);
-  pthread_mutex_unlock(&cache_lock);
+  for (int i=0; i < CACHE_SHARDS; i++) {
+    pthread_mutex_lock(&cache_shard[i].lock);
+    rrd_cache_flush(&cache_shard[i], 0);
+    pthread_mutex_unlock(&cache_shard[i].lock);
+  }
 
   pthread_mutex_lock(&queue_lock);
   do_shutdown = 1;
   pthread_cond_signal(&queue_cond);
   pthread_mutex_unlock(&queue_lock);
 
-  if ((queue_thread_running != 0) &&
+  if ((queue_threads_running != 0) &&
       ((queue_head != NULL) || (flushq_head != NULL))) {
     INFO("rrdtool plugin: Shutting down the queue thread. "
          "This may take a while.");
-  } else if (queue_thread_running != 0) {
+  } else if (queue_threads_running != 0) {
     INFO("rrdtool plugin: Shutting down the queue thread.");
   }
 
   /* Wait for all the values to be written to disk before returning. */
-  if (queue_thread_running != 0) {
-    pthread_join(queue_thread, NULL);
-    memset(&queue_thread, 0, sizeof(queue_thread));
-    queue_thread_running = 0;
+  if (queue_threads_running != 0  && queue_threads!=NULL) {
+    int n;
+    for (n=0; n < queue_threads_num; n++) {
+      pthread_join (queue_threads[n], NULL);
+      memset (&queue_threads[n], 0, sizeof (*queue_threads));
+    }
+    queue_threads_running = 0;
     DEBUG("rrdtool plugin: queue_thread exited.");
   }
 
   rrd_cache_destroy();
+
+  pthread_mutex_lock (&queue_lock);
+  c_avl_destroy (queue);
+  queue = NULL;
+  pthread_mutex_unlock (&queue_lock);
+
+  sfree(queue_threads);
+  sfree(queue_file);
 
   return 0;
 } /* int rrd_shutdown */
 
 static int rrd_init(void) {
   static int init_once;
+  int n;
 
   if (init_once != 0)
     return 0;
@@ -1025,17 +1326,6 @@ static int rrd_init(void) {
   if (rrdcreate_config.heartbeat <= 0)
     rrdcreate_config.heartbeat = 2 * rrdcreate_config.stepsize;
 
-  /* Set the cache up */
-  pthread_mutex_lock(&cache_lock);
-
-  cache = c_avl_create((int (*)(const void *, const void *))strcmp);
-  if (cache == NULL) {
-    pthread_mutex_unlock(&cache_lock);
-    ERROR("rrdtool plugin: c_avl_create failed.");
-    return -1;
-  }
-
-  cache_flush_last = cdtime();
   if (cache_timeout == 0) {
     random_timeout = 0;
     cache_flush_timeout = 0;
@@ -1048,6 +1338,8 @@ static int rrd_init(void) {
     cache_flush_timeout = 10 * cache_timeout;
   }
 
+  cache_values_size = 32;
+
   /* Assure that "cache_timeout + random_variation" is never negative. */
   if (random_timeout > cache_timeout) {
     INFO("rrdtool plugin: Adjusting \"RandomTimeout\" to %.3f seconds.",
@@ -1055,15 +1347,53 @@ static int rrd_init(void) {
     random_timeout = cache_timeout;
   }
 
-  pthread_mutex_unlock(&cache_lock);
+  for (int i=0; i < CACHE_SHARDS; i++) {
+    /* Set the cache up */
+    pthread_mutex_init(&cache_shard[i].lock, NULL); 
+    cache_shard[i].tree = c_avl_create((int (*)(const void *, const void *))strcmp);
+    if (cache_shard[i].tree == NULL) {
+      ERROR("rrdtool plugin: c_avl_create failed.");
+      return -1;
+    }
+    cache_shard[i].flush_last = cdtime();
+  }
 
-  int status = plugin_thread_create(&queue_thread, rrd_queue_thread,
-                                    /* args = */ NULL, "rrdtool queue");
-  if (status != 0) {
-    ERROR("rrdtool plugin: Cannot create queue-thread.");
+  pthread_mutex_lock (&queue_lock);
+  queue = c_avl_create ((int (*) (const void *, const void *)) strcmp);
+  if (queue == NULL) {
+    ERROR ("rrdtool plugin: c_avl_create failed.");
     return -1;
   }
-  queue_thread_running = 1;
+  pthread_mutex_unlock (&queue_lock);
+
+  queue_threads = calloc(queue_threads_num, sizeof(pthread_t));
+  if (queue_threads == NULL) {
+    ERROR ("rrdtool plugin: Cannot calloc queue_threads.");
+    return -1;
+  }
+
+  queue_file = calloc(queue_threads_num, sizeof(char *));
+  if (queue_file == NULL) {
+    ERROR ("rrdtool plugin: Cannot calloc queue_file.");
+    return -1;
+  }
+
+  queue_threads_running = 0;
+  for (n=0; n < queue_threads_num; n++) {
+    int status;
+    char name[16]; 
+    ssnprintf(name, sizeof(name), "rrdtool queue#%" PRIu64, (uint64_t)n);
+    status = plugin_thread_create (&queue_threads[n],
+                    rrd_queue_thread, /* args = */ NULL, name);
+    if (status != 0) {
+      ERROR ("rrdtool plugin: Cannot create queue-thread.");
+      return (-1);
+    }
+    queue_threads_running++;
+  }
+
+  if (rrdtool_config_stats)
+    plugin_register_read ("rrdtool", rrd_stats_read);
 
   DEBUG("rrdtool plugin: rrd_init: datadir = %s; stepsize = %lu;"
         " heartbeat = %i; rrarows = %i; xff = %lf;",

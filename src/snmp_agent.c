@@ -1103,7 +1103,7 @@ static int snmp_agent_form_reply(struct netsnmp_request_info_s *requests,
     return SNMP_NOSUCHINSTANCE;
   }
 
-  ret = uc_get_value_by_name(name, &values, &values_num);
+  ret = uc_get_value_by_name(hostname_g, name, &values, &values_num);
 
   if (ret != 0) {
     ERROR(PLUGIN_NAME ": Failed to get value for '%s'", name);

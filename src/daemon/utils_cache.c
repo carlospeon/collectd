@@ -70,15 +70,45 @@ typedef struct cache_entry_s {
   unsigned long callbacks_mask;
 } cache_entry_t;
 
+typedef struct {
+  c_avl_tree_t *tree;
+  pthread_mutex_t lock;
+} cache_shard_t;
+
 struct uc_iter_s {
   c_avl_iterator_t *iter;
-
   char *name;
   cache_entry_t *entry;
 };
 
-static c_avl_tree_t *cache_tree;
-static pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
+#define CACHE_SHARDS 31
+cache_shard_t cache_shard[CACHE_SHARDS];
+
+//static c_avl_tree_t *cache_tree;
+//static pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static inline cache_shard_t *uc_shard(const value_list_t *vl)
+{
+  unsigned long hash = 5381;
+  const char *str = vl->host;
+  int c;
+
+  while ((c = *str++))
+      hash = ((hash << 5) + hash) + c;
+
+  return &cache_shard[hash%CACHE_SHARDS];
+}
+
+static inline cache_shard_t *uc_shard_str(const char *str)
+{
+  unsigned long hash = 5381;
+  int c;
+
+  while ((c = *str++))
+      hash = ((hash << 5) + hash) + c;
+
+  return &cache_shard[hash%CACHE_SHARDS];
+}
 
 static int cache_compare(const cache_entry_t *a, const cache_entry_t *b) {
 #if COLLECT_DEBUG
@@ -139,7 +169,7 @@ static void uc_check_range(const data_set_t *ds, cache_entry_t *ce) {
   }
 } /* void uc_check_range */
 
-static int uc_insert(const data_set_t *ds, const value_list_t *vl,
+static int uc_insert(cache_shard_t *shard, const data_set_t *ds, const value_list_t *vl,
                      const char *key) {
   /* `cache_lock' has been locked by `uc_update' */
 
@@ -205,7 +235,7 @@ static int uc_insert(const data_set_t *ds, const value_list_t *vl,
     ce->meta = meta_data_clone(vl->meta);
   }
 
-  if (c_avl_insert(cache_tree, key_copy, ce) != 0) {
+  if (c_avl_insert(shard->tree, key_copy, ce) != 0) {
     sfree(key_copy);
     ERROR("uc_insert: c_avl_insert failed.");
     return -1;
@@ -216,10 +246,11 @@ static int uc_insert(const data_set_t *ds, const value_list_t *vl,
 } /* int uc_insert */
 
 int uc_init(void) {
-  if (cache_tree == NULL)
-    cache_tree =
-        c_avl_create((int (*)(const void *, const void *))cache_compare);
-
+  for (int i=0; i < CACHE_SHARDS; i++) {
+    if (cache_shard[i].tree == NULL)
+      cache_shard[i].tree = c_avl_create((int (*)(const void *, const void *))cache_compare);
+     pthread_mutex_init(&cache_shard[i].lock, NULL);  
+  }
   return 0;
 } /* int uc_init */
 
@@ -232,40 +263,46 @@ int uc_check_timeout(void) {
   } *expired = NULL;
   size_t expired_num = 0;
 
-  pthread_mutex_lock(&cache_lock);
-  cdtime_t now = cdtime();
+  for (int i=0; i < CACHE_SHARDS; i++) {
+    pthread_mutex_lock(&cache_shard[i].lock);
+    cdtime_t now = cdtime();
 
-  /* Build a list of entries to be flushed */
-  c_avl_iterator_t *iter = c_avl_get_iterator(cache_tree);
-  char *key = NULL;
-  cache_entry_t *ce = NULL;
-  while (c_avl_iterator_next(iter, (void *)&key, (void *)&ce) == 0) {
-    /* If the entry is fresh enough, continue. */
-    if ((now - ce->last_update) < (ce->interval * timeout_g))
-      continue;
+    /* Build a list of entries to be flushed */
+    c_avl_iterator_t *iter = c_avl_get_iterator(cache_shard[i].tree);
+    char *key = NULL;
+    cache_entry_t *ce = NULL;
+    while (c_avl_iterator_next(iter, (void *)&key, (void *)&ce) == 0) {
+      /* If the entry is fresh enough, continue. */
+      if ((now - ce->last_update) < (ce->interval * timeout_g))
+        continue;
 
-    void *tmp = realloc(expired, (expired_num + 1) * sizeof(*expired));
-    if (tmp == NULL) {
-      ERROR("uc_check_timeout: realloc failed.");
-      continue;
-    }
-    expired = tmp;
+      /* If the entry was marked missing, continue */
+      if (ce->state == STATE_MISSING)
+        continue;
 
-    expired[expired_num].key = strdup(key);
-    expired[expired_num].time = ce->last_time;
-    expired[expired_num].interval = ce->interval;
-    expired[expired_num].callbacks_mask = ce->callbacks_mask;
+      void *tmp = realloc(expired, (expired_num + 1) * sizeof(*expired));
+      if (tmp == NULL) {
+        ERROR("uc_check_timeout: realloc failed.");
+        continue;
+      }
+      expired = tmp;
 
-    if (expired[expired_num].key == NULL) {
-      ERROR("uc_check_timeout: strdup failed.");
-      continue;
-    }
+      expired[expired_num].key = strdup(key);
+      expired[expired_num].time = ce->last_time;
+      expired[expired_num].interval = ce->interval;
+      expired[expired_num].callbacks_mask = ce->callbacks_mask;
 
-    expired_num++;
-  } /* while (c_avl_iterator_next) */
+      if (expired[expired_num].key == NULL) {
+        ERROR("uc_check_timeout: strdup failed.");
+        continue;
+      }
 
-  c_avl_iterator_destroy(iter);
-  pthread_mutex_unlock(&cache_lock);
+      expired_num++;
+    } /* while (c_avl_iterator_next) */
+
+    c_avl_iterator_destroy(iter);
+    pthread_mutex_unlock(&cache_shard[i].lock);
+  }
 
   if (expired_num == 0) {
     sfree(expired);
@@ -294,29 +331,15 @@ int uc_check_timeout(void) {
     if (expired[i].callbacks_mask)
       plugin_dispatch_cache_event(CE_VALUE_EXPIRED, expired[i].callbacks_mask,
                                   expired[i].key, &vl);
-  } /* for (i = 0; i < expired_num; i++) */
 
-  /* Now actually remove all the values from the cache. We don't re-evaluate
-   * the timestamp again, so in theory it is possible we remove a value after
-   * it is updated here. */
-  pthread_mutex_lock(&cache_lock);
-  for (size_t i = 0; i < expired_num; i++) {
-    char *key = NULL;
-    cache_entry_t *value = NULL;
-
-    if (c_avl_remove(cache_tree, expired[i].key, (void *)&key,
-                     (void *)&value) != 0) {
-      ERROR("uc_check_timeout: c_avl_remove (\"%s\") failed.", expired[i].key);
-      sfree(expired[i].key);
-      continue;
-    }
-    sfree(key);
-    cache_free(value);
-
+    /* set state to STATE_MISSING so we can send an OKAY-notification
+       when the value comes back again */
+    uc_set_state(NULL, &vl, STATE_MISSING);
     sfree(expired[i].key);
   } /* for (i = 0; i < expired_num; i++) */
-  pthread_mutex_unlock(&cache_lock);
 
+  /* Leave values in the cache to track missing values when they
+     come back again */
   sfree(expired);
   return 0;
 } /* int uc_check_timeout */
@@ -329,14 +352,16 @@ int uc_update(const data_set_t *ds, const value_list_t *vl) {
     return -1;
   }
 
-  pthread_mutex_lock(&cache_lock);
+  cache_shard_t *shard = uc_shard(vl);
+
+  pthread_mutex_lock(&shard->lock);
 
   cache_entry_t *ce = NULL;
-  int status = c_avl_get(cache_tree, name, (void *)&ce);
+  int status = c_avl_get(shard->tree, name, (void *)&ce);
   if (status != 0) /* entry does not yet exist */
   {
-    status = uc_insert(ds, vl, name);
-    pthread_mutex_unlock(&cache_lock);
+    status = uc_insert(shard, ds, vl, name);
+    pthread_mutex_unlock(&shard->lock);
 
     if (status == 0)
       plugin_dispatch_cache_event(CE_VALUE_NEW, 0 /* mask */, name, vl);
@@ -348,8 +373,8 @@ int uc_update(const data_set_t *ds, const value_list_t *vl) {
   assert(ce->values_num == ds->ds_num);
 
   if (ce->last_time >= vl->time) {
-    pthread_mutex_unlock(&cache_lock);
-    NOTICE("uc_update: Value too old: name = %s; value time = %.3f; "
+    pthread_mutex_unlock(&shard->lock);
+    INFO("uc_update: Value too old: name = %s; value time = %.3f; "
            "last cache update = %.3f;",
            name, CDTIME_T_TO_DOUBLE(vl->time),
            CDTIME_T_TO_DOUBLE(ce->last_time));
@@ -387,7 +412,7 @@ int uc_update(const data_set_t *ds, const value_list_t *vl) {
 
     default:
       /* This shouldn't happen. */
-      pthread_mutex_unlock(&cache_lock);
+      pthread_mutex_unlock(&shard->lock);
       ERROR("uc_update: Don't know how to handle data source type %i.",
             ds->ds[i].type);
       return -1;
@@ -418,7 +443,7 @@ int uc_update(const data_set_t *ds, const value_list_t *vl) {
   /* Check if cache entry has registered callbacks */
   unsigned long callbacks_mask = ce->callbacks_mask;
 
-  pthread_mutex_unlock(&cache_lock);
+  pthread_mutex_unlock(&shard->lock);
 
   if (callbacks_mask)
     plugin_dispatch_cache_event(CE_VALUE_UPDATE, callbacks_mask, name, vl);
@@ -426,55 +451,51 @@ int uc_update(const data_set_t *ds, const value_list_t *vl) {
   return 0;
 } /* int uc_update */
 
-int uc_set_callbacks_mask(const char *name, unsigned long mask) {
-  pthread_mutex_lock(&cache_lock);
+int uc_set_callbacks_mask(const char *key, const char *name, unsigned long mask) {
+  cache_shard_t *shard = uc_shard_str(key); 
+  pthread_mutex_lock(&shard->lock);
   cache_entry_t *ce = NULL;
-  int status = c_avl_get(cache_tree, name, (void *)&ce);
+  int status = c_avl_get(shard->tree, name, (void *)&ce);
   if (status != 0) { /* Ouch, just created entry disappeared ?! */
     ERROR("uc_set_callbacks_mask: Couldn't find %s entry!", name);
-    pthread_mutex_unlock(&cache_lock);
+    pthread_mutex_unlock(&shard->lock);
     return -1;
   }
   DEBUG("uc_set_callbacks_mask: set mask for \"%s\" to %lu.", name, mask);
   ce->callbacks_mask = mask;
-  pthread_mutex_unlock(&cache_lock);
+  pthread_mutex_unlock(&shard->lock);
   return 0;
 }
 
-int uc_get_rate_by_name(const char *name, gauge_t **ret_values,
+int uc_get_rate_by_name(const char *key, const char *name, gauge_t **ret_values,
                         size_t *ret_values_num) {
   gauge_t *ret = NULL;
   size_t ret_num = 0;
   cache_entry_t *ce = NULL;
   int status = 0;
 
-  pthread_mutex_lock(&cache_lock);
+  cache_shard_t *shard = uc_shard_str(key); 
 
-  if (c_avl_get(cache_tree, name, (void *)&ce) == 0) {
+  pthread_mutex_lock(&shard->lock);
+
+  if (c_avl_get(shard->tree, name, (void *)&ce) == 0) {
     assert(ce != NULL);
-
-    /* remove missing values from getval */
-    if (ce->state == STATE_MISSING) {
-      DEBUG("utils_cache: uc_get_rate_by_name: requested metric \"%s\" is in "
-            "state \"missing\".",
-            name);
+    /* Removing values with missing state would cause threshold plugin
+       to not send OKAY-notifications. Does it causes any bad side effect elsewhere ? */
+    ret_num = ce->values_num;
+    ret = malloc(ret_num * sizeof(*ret));
+    if (ret == NULL) {
+      ERROR("utils_cache: uc_get_rate_by_name: malloc failed.");
       status = -1;
     } else {
-      ret_num = ce->values_num;
-      ret = malloc(ret_num * sizeof(*ret));
-      if (ret == NULL) {
-        ERROR("utils_cache: uc_get_rate_by_name: malloc failed.");
-        status = -1;
-      } else {
-        memcpy(ret, ce->values_gauge, ret_num * sizeof(gauge_t));
-      }
+      memcpy(ret, ce->values_gauge, ret_num * sizeof(gauge_t));
     }
   } else {
     DEBUG("utils_cache: uc_get_rate_by_name: No such value: %s", name);
     status = -1;
   }
 
-  pthread_mutex_unlock(&cache_lock);
+  pthread_mutex_unlock(&shard->lock);
 
   if (status == 0) {
     *ret_values = ret;
@@ -495,7 +516,7 @@ gauge_t *uc_get_rate(const data_set_t *ds, const value_list_t *vl) {
     return NULL;
   }
 
-  status = uc_get_rate_by_name(name, &ret, &ret_num);
+  status = uc_get_rate_by_name(vl->host, name, &ret, &ret_num);
   if (status != 0)
     return NULL;
 
@@ -512,16 +533,18 @@ gauge_t *uc_get_rate(const data_set_t *ds, const value_list_t *vl) {
   return ret;
 } /* gauge_t *uc_get_rate */
 
-int uc_get_value_by_name(const char *name, value_t **ret_values,
+int uc_get_value_by_name(const char *key, const char *name, value_t **ret_values,
                          size_t *ret_values_num) {
   value_t *ret = NULL;
   size_t ret_num = 0;
   cache_entry_t *ce = NULL;
   int status = 0;
 
-  pthread_mutex_lock(&cache_lock);
+  cache_shard_t *shard = uc_shard_str(key); 
 
-  if (c_avl_get(cache_tree, name, (void *)&ce) == 0) {
+  pthread_mutex_lock(&shard->lock);
+
+  if (c_avl_get(shard->tree, name, (void *)&ce) == 0) {
     assert(ce != NULL);
 
     /* remove missing values from getval */
@@ -542,7 +565,7 @@ int uc_get_value_by_name(const char *name, value_t **ret_values,
     status = -1;
   }
 
-  pthread_mutex_unlock(&cache_lock);
+  pthread_mutex_unlock(&shard->lock);
 
   if (status == 0) {
     *ret_values = ret;
@@ -563,7 +586,7 @@ value_t *uc_get_value(const data_set_t *ds, const value_list_t *vl) {
     return (NULL);
   }
 
-  status = uc_get_value_by_name(name, &ret, &ret_num);
+  status = uc_get_value_by_name(vl->host, name, &ret, &ret_num);
   if (status != 0)
     return (NULL);
 
@@ -583,9 +606,11 @@ value_t *uc_get_value(const data_set_t *ds, const value_list_t *vl) {
 size_t uc_get_size(void) {
   size_t size_arrays = 0;
 
-  pthread_mutex_lock(&cache_lock);
-  size_arrays = (size_t)c_avl_size(cache_tree);
-  pthread_mutex_unlock(&cache_lock);
+  for (int i=0; i < CACHE_SHARDS; i++) { 
+    pthread_mutex_lock(&cache_shard[i].lock);
+    size_arrays += (size_t)c_avl_size(cache_shard[i].tree);
+    pthread_mutex_unlock(&cache_shard[i].lock);
+  }
 
   return size_arrays;
 }
@@ -599,60 +624,73 @@ int uc_get_names(char ***ret_names, cdtime_t **ret_times, size_t *ret_number) {
   cdtime_t *times = NULL;
   size_t number = 0;
   size_t size_arrays = 0;
+  size_t total_size_arrays = 0;
 
   int status = 0;
 
   if ((ret_names == NULL) || (ret_number == NULL))
     return -1;
 
-  pthread_mutex_lock(&cache_lock);
+  for (int i=0; i < CACHE_SHARDS; i++) {
+    pthread_mutex_lock(&cache_shard[i].lock);
 
-  size_arrays = (size_t)c_avl_size(cache_tree);
-  if (size_arrays < 1) {
-    /* Handle the "no values" case here, to avoid the error message when
-     * calloc() returns NULL. */
-    pthread_mutex_unlock(&cache_lock);
-    return 0;
-  }
-
-  names = calloc(size_arrays, sizeof(*names));
-  times = calloc(size_arrays, sizeof(*times));
-  if ((names == NULL) || (times == NULL)) {
-    ERROR("uc_get_names: calloc failed.");
-    sfree(names);
-    sfree(times);
-    pthread_mutex_unlock(&cache_lock);
-    return ENOMEM;
-  }
-
-  iter = c_avl_get_iterator(cache_tree);
-  while (c_avl_iterator_next(iter, (void *)&key, (void *)&value) == 0) {
-    /* remove missing values when list values */
-    if (value->state == STATE_MISSING)
+    size_arrays = (size_t)c_avl_size(cache_shard[i].tree);
+    if (size_arrays < 1) {
+      /* Handle the "no values" case here, to avoid the error message when
+       * calloc() returns NULL. */
+      pthread_mutex_unlock(&cache_shard[i].lock);
       continue;
+    }
+    total_size_arrays += size_arrays;
 
-    /* c_avl_size does not return a number smaller than the number of elements
-     * returned by c_avl_iterator_next. */
-    assert(number < size_arrays);
-
-    if (ret_times != NULL)
-      times[number] = value->last_time;
-
-    names[number] = strdup(key);
-    if (names[number] == NULL) {
-      status = -1;
-      break;
+    names = realloc(names, total_size_arrays*sizeof(*names));
+    times = realloc(times, total_size_arrays*sizeof(*times));
+    if ((names == NULL) || (times == NULL)) {
+      ERROR("uc_get_names: calloc failed.");
+      if (names != NULL) {
+        for (size_t j = 0; j < number; j++) {
+          sfree(names[j]);
+        }
+        sfree(names);
+      }
+      sfree(times);
+      pthread_mutex_unlock(&cache_shard[i].lock);
+      return ENOMEM;
     }
 
-    number++;
-  } /* while (c_avl_iterator_next) */
+    iter = c_avl_get_iterator(cache_shard[i].tree);
+    size_t c_number = 0;
+    while (c_avl_iterator_next(iter, (void *)&key, (void *)&value) == 0) {
+      /* remove missing values when list values */
+      if (value->state == STATE_MISSING)
+        continue;
 
-  c_avl_iterator_destroy(iter);
-  pthread_mutex_unlock(&cache_lock);
+      /* c_avl_size does not return a number smaller than the number of elements
+       * returned by c_avl_iterator_next. */
+      assert(c_number < size_arrays);
+
+      if (ret_times != NULL)
+        times[number] = value->last_time;
+
+      names[number] = strdup(key);
+      if (names[number] == NULL) {
+        status = -1;
+        break;
+      }
+
+      c_number++;
+      number++;
+    } /* while (c_avl_iterator_next) */
+
+    c_avl_iterator_destroy(iter);
+    pthread_mutex_unlock(&cache_shard[i].lock);
+  }
 
   if (status != 0) {
-    for (size_t i = 0; i < number; i++) {
-      sfree(names[i]);
+    if (names != NULL) {
+      for (size_t i = 0; i < number; i++) {
+        sfree(names[i]);
+      }
     }
     sfree(names);
     sfree(times);
@@ -680,14 +718,16 @@ int uc_get_state(const value_list_t *vl) {
     return STATE_ERROR;
   }
 
-  pthread_mutex_lock(&cache_lock);
+  cache_shard_t *shard = uc_shard(vl);
 
-  if (c_avl_get(cache_tree, name, (void *)&ce) == 0) {
+  pthread_mutex_lock(&shard->lock);
+
+  if (c_avl_get(shard->tree, name, (void *)&ce) == 0) {
     assert(ce != NULL);
     ret = ce->state;
   }
 
-  pthread_mutex_unlock(&cache_lock);
+  pthread_mutex_unlock(&shard->lock);
 
   return ret;
 } /* int uc_get_state */
@@ -702,34 +742,38 @@ int uc_set_state(const value_list_t *vl, int state) {
     return STATE_ERROR;
   }
 
-  pthread_mutex_lock(&cache_lock);
+  cache_shard_t *shard = uc_shard(vl);
 
-  if (c_avl_get(cache_tree, name, (void *)&ce) == 0) {
+  pthread_mutex_lock(&shard->lock);
+
+  if (c_avl_get(shard->tree, name, (void *)&ce) == 0) {
     assert(ce != NULL);
     ret = ce->state;
     ce->state = state;
   }
 
-  pthread_mutex_unlock(&cache_lock);
+  pthread_mutex_unlock(&shard->lock);
 
   return ret;
 } /* int uc_set_state */
 
-int uc_get_history_by_name(const char *name, gauge_t *ret_history,
+int uc_get_history_by_name(const char *key, const char *name, gauge_t *ret_history,
                            size_t num_steps, size_t num_ds) {
   cache_entry_t *ce = NULL;
   int status = 0;
 
-  pthread_mutex_lock(&cache_lock);
+  cache_shard_t *shard = uc_shard_str(key);
 
-  status = c_avl_get(cache_tree, name, (void *)&ce);
+  pthread_mutex_lock(&shard->lock);
+
+  status = c_avl_get(shard->tree, name, (void *)&ce);
   if (status != 0) {
-    pthread_mutex_unlock(&cache_lock);
+    pthread_mutex_unlock(&shard->lock);
     return -ENOENT;
   }
 
   if (((size_t)ce->values_num) != num_ds) {
-    pthread_mutex_unlock(&cache_lock);
+    pthread_mutex_unlock(&shard->lock);
     return -EINVAL;
   }
 
@@ -741,7 +785,7 @@ int uc_get_history_by_name(const char *name, gauge_t *ret_history,
     tmp =
         realloc(ce->history, sizeof(*ce->history) * num_steps * ce->values_num);
     if (tmp == NULL) {
-      pthread_mutex_unlock(&cache_lock);
+      pthread_mutex_unlock(&shard->lock);
       return -ENOMEM;
     }
 
@@ -770,12 +814,24 @@ int uc_get_history_by_name(const char *name, gauge_t *ret_history,
            sizeof(*ret_history) * num_ds);
   }
 
-  pthread_mutex_unlock(&cache_lock);
+  pthread_mutex_unlock(&shard->lock);
 
   return 0;
 } /* int uc_get_history_by_name */
 
-int uc_get_hits(const value_list_t *vl) {
+int uc_get_history(const data_set_t *ds, const value_list_t *vl,
+                   gauge_t *ret_history, size_t num_steps, size_t num_ds) {
+  char name[6 * DATA_MAX_NAME_LEN];
+
+  if (FORMAT_VL(name, sizeof(name), vl) != 0) {
+    ERROR("utils_cache: uc_get_history: FORMAT_VL failed.");
+    return -1;
+  }
+
+  return uc_get_history_by_name(vl->host, name, ret_history, num_steps, num_ds);
+} /* int uc_get_history */
+
+int uc_get_hits(const data_set_t *ds, const value_list_t *vl) {
   char name[6 * DATA_MAX_NAME_LEN];
   cache_entry_t *ce = NULL;
   int ret = STATE_ERROR;
@@ -785,14 +841,16 @@ int uc_get_hits(const value_list_t *vl) {
     return STATE_ERROR;
   }
 
-  pthread_mutex_lock(&cache_lock);
+  cache_shard_t *shard = uc_shard(vl);
 
-  if (c_avl_get(cache_tree, name, (void *)&ce) == 0) {
+  pthread_mutex_lock(&shard->lock);
+
+  if (c_avl_get(shard->tree, name, (void *)&ce) == 0) {
     assert(ce != NULL);
     ret = ce->hits;
   }
 
-  pthread_mutex_unlock(&cache_lock);
+  pthread_mutex_unlock(&shard->lock);
 
   return ret;
 } /* int uc_get_hits */
@@ -807,15 +865,17 @@ int uc_set_hits(const value_list_t *vl, int hits) {
     return STATE_ERROR;
   }
 
-  pthread_mutex_lock(&cache_lock);
+  cache_shard_t *shard = uc_shard(vl);
 
-  if (c_avl_get(cache_tree, name, (void *)&ce) == 0) {
+  pthread_mutex_lock(&shard->lock);
+
+  if (c_avl_get(shard->tree, name, (void *)&ce) == 0) {
     assert(ce != NULL);
     ret = ce->hits;
     ce->hits = hits;
   }
 
-  pthread_mutex_unlock(&cache_lock);
+  pthread_mutex_unlock(&shard->lock);
 
   return ret;
 } /* int uc_set_hits */
@@ -830,15 +890,17 @@ int uc_inc_hits(const value_list_t *vl, int step) {
     return STATE_ERROR;
   }
 
-  pthread_mutex_lock(&cache_lock);
+  cache_shard_t *shard = uc_shard(vl);
 
-  if (c_avl_get(cache_tree, name, (void *)&ce) == 0) {
+  pthread_mutex_lock(&shard->lock);
+
+  if (c_avl_get(shard->tree, name, (void *)&ce) == 0) {
     assert(ce != NULL);
     ret = ce->hits;
     ce->hits = ret + step;
   }
 
-  pthread_mutex_unlock(&cache_lock);
+  pthread_mutex_unlock(&shard->lock);
 
   return ret;
 } /* int uc_inc_hits */
@@ -851,9 +913,9 @@ uc_iter_t *uc_get_iterator(void) {
   if (iter == NULL)
     return NULL;
 
-  pthread_mutex_lock(&cache_lock);
+  pthread_mutex_lock(&cache_shard[0].lock);
 
-  iter->iter = c_avl_get_iterator(cache_tree);
+  iter->iter = c_avl_get_iterator(cache_shard[0].tree);
   if (iter->iter == NULL) {
     free(iter);
     return NULL;
@@ -892,7 +954,7 @@ void uc_iterator_destroy(uc_iter_t *iter) {
     return;
 
   c_avl_iterator_destroy(iter->iter);
-  pthread_mutex_unlock(&cache_lock);
+  pthread_mutex_unlock(&cache_shard[0].lock);
 
   free(iter);
 } /* void uc_iterator_destroy */
@@ -955,11 +1017,13 @@ static meta_data_t *uc_get_meta(const value_list_t *vl) /* {{{ */
     return NULL;
   }
 
-  pthread_mutex_lock(&cache_lock);
+  cache_shard_t *shard = uc_shard(vl);
 
-  status = c_avl_get(cache_tree, name, (void *)&ce);
+  pthread_mutex_lock(&shard->lock);
+
+  status = c_avl_get(shard->tree, name, (void *)&ce);
   if (status != 0) {
-    pthread_mutex_unlock(&cache_lock);
+    pthread_mutex_unlock(&shard->lock);
     return NULL;
   }
   assert(ce != NULL);
@@ -968,7 +1032,7 @@ static meta_data_t *uc_get_meta(const value_list_t *vl) /* {{{ */
     ce->meta = meta_data_create();
 
   if (ce->meta == NULL)
-    pthread_mutex_unlock(&cache_lock);
+    pthread_mutex_unlock(&shard->lock);
 
   return ce->meta;
 } /* }}} meta_data_t *uc_get_meta */
@@ -983,7 +1047,8 @@ static meta_data_t *uc_get_meta(const value_list_t *vl) /* {{{ */
     if (meta == NULL)                                                          \
       return -1;                                                               \
     status = wrap_function(meta, key);                                         \
-    pthread_mutex_unlock(&cache_lock);                                         \
+    cache_shard_t *shard = uc_shard(vl);                                       \
+    pthread_mutex_unlock(&shard->lock);                                        \
     return status;                                                             \
   }
 int uc_meta_data_exists(const value_list_t *vl, const char *key)
@@ -1009,7 +1074,8 @@ int uc_meta_data_exists(const value_list_t *vl, const char *key)
     if (meta == NULL)                                                          \
       return -1;                                                               \
     status = wrap_function(meta, key, value);                                  \
-    pthread_mutex_unlock(&cache_lock);                                         \
+    cache_shard_t *shard = uc_shard(vl);                                       \
+    pthread_mutex_unlock(&shard->lock);                                        \
     return status;                                                             \
   }
         int uc_meta_data_add_string(const value_list_t *vl, const char *key,

@@ -31,6 +31,7 @@
 #include "utils/format_influxdb/format_influxdb.h"
 #include "utils/format_json/format_json.h"
 #include "utils/format_kairosdb/format_kairosdb.h"
+#include "utils/format_graphite/format_graphite.h"
 
 #include <curl/curl.h>
 
@@ -45,6 +46,17 @@
 #ifndef WRITE_HTTP_RESPONSE_BUFFER_SIZE
 #define WRITE_HTTP_RESPONSE_BUFFER_SIZE 1024
 #endif
+
+#ifndef WRITE_HTTP_DEFAULT_ESCAPE
+#define WRITE_HTTP_DEFAULT_ESCAPE '_'
+#endif
+
+typedef struct {
+  char *prefix;
+  char *postfix;
+  char escape_char;
+  unsigned int flags;
+} format_graphite_t;
 
 /*
  * Private variables
@@ -74,7 +86,9 @@ struct wh_callback_s {
 #define WH_FORMAT_JSON 1
 #define WH_FORMAT_KAIROSDB 2
 #define WH_FORMAT_INFLUXDB 3
+#define WH_FORMAT_GRAPHITE 4
   int format;
+  format_graphite_t fmt_graphite;
   bool send_metrics;
   bool send_notifications;
 
@@ -633,6 +647,65 @@ static int wh_write_influxdb(const data_set_t *ds,
   return 0;
 } /* }}} int wh_write_influxdb */
 
+static int wh_write_graphite(const data_set_t *ds,
+                             const value_list_t *vl, /* {{{ */
+                             wh_callback_t *cb) {
+  int status;
+
+  pthread_mutex_lock(&cb->send_lock);
+
+  if (cb->curl == NULL) {
+    status = wh_callback_init(cb);
+    if (status != 0) {
+      ERROR("write_http plugin: wh_callback_init failed.");
+      pthread_mutex_unlock(&cb->send_lock);
+      return -1;
+    }
+  }
+
+  if (0 != strcmp(ds->type, vl->type)) {
+    ERROR("write_http plugin: DS type does not match "
+          "value list type");
+    return -1;
+  }
+
+  size_t old_size = cb->send_buffer_fill;
+  char *buffer = cb->send_buffer+cb->send_buffer_fill;
+  status = format_graphite(buffer, cb->send_buffer_free, ds, vl,
+                           cb->fmt_graphite.prefix, cb->fmt_graphite.postfix,
+                           cb->fmt_graphite.escape_char, cb->fmt_graphite.flags);
+  if (status == -ENOMEM) {
+    cb->send_buffer[old_size] = '\0';
+    status = wh_flush_nolock(/* timeout = */ 0, cb);
+    if (status != 0) {
+      wh_reset_buffer(cb);
+      pthread_mutex_unlock(&cb->send_lock);
+      return status;
+    }
+
+    char *buffer = cb->send_buffer+cb->send_buffer_fill;
+    status = format_graphite(buffer, cb->send_buffer_free, ds, vl,
+                             cb->fmt_graphite.prefix, cb->fmt_graphite.postfix,
+                             cb->fmt_graphite.escape_char, cb->fmt_graphite.flags);
+  }
+  if (status != 0) {
+    cb->send_buffer_fill = strlen(cb->send_buffer);
+    cb->send_buffer_free = cb->send_buffer_size - cb->send_buffer_fill;
+    pthread_mutex_unlock(&cb->send_lock);
+    return status;
+  }
+
+  DEBUG("write_http plugin: <%s> buffer %" PRIsz "/%" PRIsz " (%g%%)",
+        cb->location, cb->send_buffer_fill, cb->send_buffer_size,
+        100.0 * ((double)cb->send_buffer_fill) /
+            ((double)cb->send_buffer_size));
+
+  /* Check if we have enough space for this command. */
+  pthread_mutex_unlock(&cb->send_lock);
+
+  return 0;
+} /* }}} int wh_write_graphite */
+
 static int wh_write(const data_set_t *ds, const value_list_t *vl, /* {{{ */
                     user_data_t *user_data) {
   wh_callback_t *cb;
@@ -653,6 +726,9 @@ static int wh_write(const data_set_t *ds, const value_list_t *vl, /* {{{ */
     break;
   case WH_FORMAT_INFLUXDB:
     status = wh_write_influxdb(ds, vl, cb);
+    break;
+  case WH_FORMAT_GRAPHITE:
+    status = wh_write_graphite(ds, vl, cb);
     break;
   default:
     status = wh_write_command(ds, vl, cb);
@@ -692,6 +768,69 @@ static int wh_notify(notification_t const *n, user_data_t *ud) /* {{{ */
   return status;
 } /* }}} int wh_notify */
 
+static int config_set_char(char *dest, oconfig_item_t *ci) {
+  char buffer[4] = {0};
+  int status;
+
+  status = cf_util_get_string_buffer(ci, buffer, sizeof(buffer));
+  if (status != 0)
+    return status;
+
+  if (buffer[0] == 0) {
+    ERROR("write_graphite plugin: Cannot use an empty string for the "
+          "\"EscapeCharacter\" option.");
+    return -1;
+  }
+
+  if (buffer[1] != 0) {
+    WARNING("write_graphite plugin: Only the first character of the "
+            "\"EscapeCharacter\" option ('%c') will be used.",
+            (int)buffer[0]);
+  }
+
+  *dest = buffer[0];
+
+  return 0;
+}
+
+static int wh_config_format_graphite(oconfig_item_t *ci, format_graphite_t *fmt) {
+  int status = 0;
+
+  for (int i = 0; i < ci->children_num; i++) {
+    oconfig_item_t *child = ci->children + i;
+    
+    if (strcasecmp("Prefix", child->key) == 0)
+      cf_util_get_string(child, &fmt->prefix);
+    else if (strcasecmp("Postfix", child->key) == 0)
+      cf_util_get_string(child, &fmt->postfix);
+    else if (strcasecmp("StoreRates", child->key) == 0)
+      cf_util_get_flag(child, &fmt->flags, GRAPHITE_STORE_RATES);
+    else if (strcasecmp("SeparateInstances", child->key) == 0)
+      cf_util_get_flag(child, &fmt->flags, GRAPHITE_SEPARATE_INSTANCES);
+    else if (strcasecmp("AlwaysAppendDS", child->key) == 0)
+      cf_util_get_flag(child, &fmt->flags, GRAPHITE_ALWAYS_APPEND_DS);
+    else if (strcasecmp("PreserveSeparator", child->key) == 0)
+      cf_util_get_flag(child, &fmt->flags, GRAPHITE_PRESERVE_SEPARATOR);
+    else if (strcasecmp("DropDuplicateFields", child->key) == 0)
+      cf_util_get_flag(child, &fmt->flags, GRAPHITE_DROP_DUPE_FIELDS);
+    else if (strcasecmp("UseTags", child->key) == 0)
+      cf_util_get_flag(child, &fmt->flags, GRAPHITE_USE_TAGS);
+    else if (strcasecmp("ReverseHost", child->key) == 0)
+      cf_util_get_flag(child, &fmt->flags, GRAPHITE_REVERSE_HOST);
+    else if (strcasecmp("EscapeCharacter", child->key) == 0)
+      config_set_char(&fmt->escape_char, child);
+    else {
+      ERROR("write_http plugin: Invalid configuration option: %s.", child->key);
+      status = EINVAL;
+    }
+
+    if (status != 0)
+      break;
+  }
+
+  return status;
+}
+
 static int config_set_format(wh_callback_t *cb, /* {{{ */
                              oconfig_item_t *ci) {
   char *string;
@@ -712,7 +851,10 @@ static int config_set_format(wh_callback_t *cb, /* {{{ */
     cb->format = WH_FORMAT_KAIROSDB;
   else if (strcasecmp("INFLUXDB", string) == 0)
     cb->format = WH_FORMAT_INFLUXDB;
-  else {
+  else if (strcasecmp("GRAPHITE", string) == 0) {
+    cb->format = WH_FORMAT_GRAPHITE;
+    return wh_config_format_graphite(ci, &cb->fmt_graphite);
+  } else {
     ERROR("write_http plugin: Invalid format string: %s", string);
     return -1;
   }
@@ -764,6 +906,8 @@ static int wh_config_node(oconfig_item_t *ci) /* {{{ */
   cb->metrics_prefix = strdup(WRITE_HTTP_DEFAULT_PREFIX);
   cb->curl_stats = NULL;
   cb->unix_socket_path = NULL;
+
+  cb->fmt_graphite.escape_char = WRITE_HTTP_DEFAULT_ESCAPE;
 
   if (cb->metrics_prefix == NULL) {
     ERROR("write_http plugin: strdup failed.");

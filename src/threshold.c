@@ -74,8 +74,6 @@ static int ut_threshold_add(const threshold_t *th) { /* {{{ */
 
   DEBUG("ut_threshold_add: Adding entry `%s'", name);
 
-  pthread_mutex_lock(&threshold_lock);
-
   th_ptr = threshold_get(th->host, th->plugin, th->plugin_instance, th->type,
                          th->type_instance);
 
@@ -91,8 +89,6 @@ static int ut_threshold_add(const threshold_t *th) { /* {{{ */
     /* name_copy isn't needed */
     sfree(name_copy);
   }
-
-  pthread_mutex_unlock(&threshold_lock);
 
   if (status != 0) {
     ERROR("ut_threshold_add: c_avl_insert (%s) failed.", name);
@@ -620,11 +616,7 @@ static int ut_check_threshold(const data_set_t *ds, const value_list_t *vl,
   if (threshold_tree == NULL)
     return 0;
 
-  /* Is this lock really necessary? So far, thresholds are only inserted at
-   * startup. -octo */
-  pthread_mutex_lock(&threshold_lock);
   th = threshold_search(vl);
-  pthread_mutex_unlock(&threshold_lock);
   if (th == NULL)
     return 0;
 

@@ -120,6 +120,7 @@
 #@BUILD_PLUGIN_DCPMM_TRUE@LoadPlugin dcpmm
 #@BUILD_PLUGIN_DF_TRUE@LoadPlugin df
 #@BUILD_PLUGIN_DISK_TRUE@LoadPlugin disk
+#@BUILD_PLUGIN_DISKPATH_TRUE@LoadPlugin diskpath
 #@BUILD_PLUGIN_DNS_TRUE@LoadPlugin dns
 #@BUILD_PLUGIN_DPDKEVENTS_TRUE@LoadPlugin dpdkevents
 #@BUILD_PLUGIN_DPDKSTAT_TRUE@LoadPlugin dpdkstat
@@ -136,6 +137,7 @@
 #@BUILD_PLUGIN_GMOND_TRUE@LoadPlugin gmond
 #@BUILD_PLUGIN_GPS_TRUE@LoadPlugin gps
 #@BUILD_PLUGIN_GRPC_TRUE@LoadPlugin grpc
+#@BUILD_PLUGIN_HBA_TRUE@LoadPlugin hba
 #@BUILD_PLUGIN_HDDTEMP_TRUE@LoadPlugin hddtemp
 #@BUILD_PLUGIN_HUGEPAGES_TRUE@LoadPlugin hugepages
 #@BUILD_PLUGIN_INFINIBAND_TRUE@LoadPlugin infiniband
@@ -171,6 +173,7 @@
 @LOAD_PLUGIN_NETWORK@LoadPlugin network
 #@BUILD_PLUGIN_NFS_TRUE@LoadPlugin nfs
 #@BUILD_PLUGIN_NGINX_TRUE@LoadPlugin nginx
+#@BUILD_PLUGIN_NOTIFY_DBI_TRUE@LoadPlugin notify_dbi
 #@BUILD_PLUGIN_NOTIFY_DESKTOP_TRUE@LoadPlugin notify_desktop
 #@BUILD_PLUGIN_NOTIFY_EMAIL_TRUE@LoadPlugin notify_email
 #@BUILD_PLUGIN_NOTIFY_NAGIOS_TRUE@LoadPlugin notify_nagios
@@ -687,6 +690,11 @@
 #	ReportFlush false
 #</Plugin>
 
+#<Plugin diskpath>
+#       DiskPath "/^hdisk[0-9]+_Path[0-9]+$/"
+#       IgnoreSelected false
+#</Plugin>
+
 #<Plugin dns>
 #	Interface "eth0"
 #	IgnoreSource "192.168.0.1"
@@ -824,6 +832,11 @@
 #		SSLCertificateKeyFile "/path/to/client.key"
 #		VerifyPeer true
 #	</Listen>
+#</Plugin>
+
+#<Plugin "hba">
+#      Hba "/^fcs[0-9]?$/"
+#      IgnoreSelected false
 #</Plugin>
 
 #<Plugin hddtemp>
@@ -1252,6 +1265,22 @@
 #	User "www-user"
 #	Password "secret"
 #	CACert "/etc/ssl/ca.crt"
+#</Plugin>
+
+#<Plugin notify_dbi>
+#  <Database "mysql">
+#    Driver "mysql"
+#    DriverOption "host" "127.0.0.1"
+#    DriverOption "port" "3306"
+#    DriverOption "username" "db_user"
+#    DriverOption "password" "secret"
+#    DriverOption "dbname" "db_name"
+#
+#    Query "Failure" "Warning" "Ok" "INSERT INTO alert_history (host, plugin, plugin_instance, type, type_instance, time, severity, message) VALUES ('%{host}', '%{plugin}', '%{plugin_instance}', '%{type}', '%{type_instance}', '%{time}', '%{severity}', '%{message}')"
+#    Query "Failure" "Warning" "DELETE FROM alert where host = '%{host}' and plugin = '%{plugin}' and plugin_instance = '%{plugin_instance}' and type = '%{type}' and type_instance = '%{type_instance}'"
+#    Query "Failure" "Warning" "INSERT INTO alert (host, plugin, plugin_instance, type, type_instance, time, severity, message) VALUES ('%{host}', '%{plugin}', '%{plugin_instance}', '%{type}', '%{type_instance}', '%{time}', '%{severity}', '%{message}')"
+#    Query "Ok" "DELETE FROM alert where host = '%{host}' and plugin = '%{plugin}' and plugin_instance = '%{plugin_instance}' and type = '%{type}' and type_instance = '%{type_instance}'" 
+#  </Database>
 #</Plugin>
 
 #<Plugin notify_desktop>
@@ -2233,3 +2262,6 @@
 #    </Type>
 #  </Host>
 #</Plugin>
+<Include "/etc/collectd.d">
+    Filter "*.conf"
+</Include>

@@ -198,14 +198,16 @@ static size_t global_cpu_num;
 
 static bool report_by_cpu = true;
 static bool report_by_state = true;
+static bool report_total = true;
 static bool report_percent;
 static bool report_num_cpu;
 static bool report_guest;
 static bool subtract_guest = true;
 
 static const char *config_keys[] = {"ReportByCpu",      "ReportByState",
-                                    "ReportNumCpu",     "ValuesPercentage",
-                                    "ReportGuestState", "SubtractGuestState"};
+                                    "ReportTotal",      "ReportNumCpu",
+                                    "ValuesPercentage", "ReportGuestState",
+                                    "SubtractGuestState"};
 static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
 
 static int cpu_config(char const *key, char const *value) /* {{{ */
@@ -216,6 +218,8 @@ static int cpu_config(char const *key, char const *value) /* {{{ */
     report_percent = IS_TRUE(value);
   else if (strcasecmp(key, "ReportByState") == 0)
     report_by_state = IS_TRUE(value);
+  else if (strcasecmp (key, "ReportTotal") == 0)
+    report_total = IS_TRUE(value);
   else if (strcasecmp(key, "ReportNumCpu") == 0)
     report_num_cpu = IS_TRUE(value);
   else if (strcasecmp(key, "ReportGuestState") == 0)
@@ -338,6 +342,8 @@ static void submit_value(int cpu_num, int cpu_state, const char *type,
 
   if (cpu_num >= 0) {
     snprintf(vl.plugin_instance, sizeof(vl.plugin_instance), "%i", cpu_num);
+  } else {
+    sstrncpy (vl.plugin_instance, "all", sizeof (vl.plugin_instance));
   }
   plugin_dispatch_values(&vl);
 }
@@ -529,6 +535,25 @@ static void cpu_commit_without_aggregation(void) /* {{{ */
   }
 } /* }}} void cpu_commit_without_aggregation */
 
+static void cpu_commit_total(void) /* {{{ */
+{
+  for (int state = 0; state < COLLECTD_CPU_STATE_ACTIVE; state++) {
+    derive_t value = 0;
+    int has_value = 0;
+    for (size_t cpu_num = 0; cpu_num < global_cpu_num; cpu_num++) {
+      cpu_state_t *s = get_cpu_state(cpu_num, state);
+
+      has_value += s->has_value;
+      if (!s->has_value)
+        continue;
+
+      value += s->conv.last_value.derive;
+    }
+    if (has_value) 
+      submit_derive(-1, (int)state, value/global_cpu_num);
+  }
+} /* }}} void cpu_commit_total */
+
 /* Aggregates the internal state and dispatches the metrics. */
 static void cpu_commit(void) /* {{{ */
 {
@@ -538,6 +563,9 @@ static void cpu_commit(void) /* {{{ */
 
   if (report_num_cpu)
     cpu_commit_num_cpu((gauge_t)global_cpu_num);
+
+  if (report_by_state && report_total && !report_percent)
+    cpu_commit_total();
 
   if (report_by_state && report_by_cpu && !report_percent) {
     cpu_commit_without_aggregation();
