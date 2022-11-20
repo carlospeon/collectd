@@ -364,16 +364,6 @@ void plugin_log_available_writers(void);
  */
 int plugin_dispatch_values(value_list_t const *vl);
 
-struct write_queue_s;
-typedef struct write_queue_s write_queue_t;
-struct write_queue_s {
-  value_list_t *vl;
-  plugin_ctx_t ctx;
-  write_queue_t *next;
-};
-
-int plugin_dispatch_write_queue(write_queue_t *head, write_queue_t *tail, size_t size);
-
 /*
  * NAME
  *  plugin_dispatch_multivalue

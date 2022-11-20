@@ -42,8 +42,6 @@
 #include "utils_random.h"
 #include "utils_time.h"
 
- #include <sched.h>
-
 #ifdef WIN32
 #define EXPORT __declspec(dllexport)
 #include <sys/stat.h>
@@ -102,6 +100,14 @@ struct notification_queue_s {
   notification_queue_t *next;
 };
 
+struct write_queue_s;
+typedef struct write_queue_s write_queue_t;
+struct write_queue_s {
+  value_list_t *vl;
+  plugin_ctx_t ctx;
+  write_queue_t *next;
+};
+
 struct flush_callback_s {
   char *name;
   cdtime_t timeout;
@@ -145,7 +151,7 @@ static cdtime_t max_read_interval = DEFAULT_MAX_READ_INTERVAL;
 
 static write_queue_t *write_queue_head;
 static write_queue_t *write_queue_tail;
-static volatile long write_queue_length;
+static long write_queue_length;
 static bool write_loop = true;
 static pthread_mutex_t write_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t write_cond = PTHREAD_COND_INITIALIZER;
@@ -681,20 +687,6 @@ static void set_thread_name(pthread_t tid, char const *name) {
 #endif
 }
 
-static void set_thread_setaffinity(pthread_attr_t *attr, char const *name) {
-  int ncpu = cf_get_cpumap(name);
-  if (ncpu < 0)
-    return;
-
-  cpu_set_t cpuset;
-  CPU_ZERO(&cpuset);
-  CPU_SET(ncpu, &cpuset);
-  int status = pthread_attr_setaffinity_np(attr, sizeof(cpu_set_t), &cpuset);
-  if (status != 0) {
-    ERROR("set_thread_setaffinity(\"%s\"): %s", name, STRERROR(status));
-  }
-}
-
 static void start_read_threads(size_t num) /* {{{ */
 {
   if (read_threads != NULL)
@@ -708,15 +700,9 @@ static void start_read_threads(size_t num) /* {{{ */
 
   read_threads_num = 0;
   for (size_t i = 0; i < num; i++) {
-    char name[THREAD_NAME_MAX];
-    ssnprintf(name, sizeof(name), "reader#%" PRIu64, (uint64_t)read_threads_num);
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    set_thread_setaffinity(&attr, name);
     int status = pthread_create(read_threads + read_threads_num,
-                                &attr, plugin_read_thread,
-                               /* arg = */ NULL);
-    pthread_attr_destroy(&attr);
+                                /* attr = */ NULL, plugin_read_thread,
+                                /* arg = */ NULL);
     if (status != 0) {
       ERROR("plugin: start_read_threads: pthread_create failed with status %i "
             "(%s).",
@@ -724,7 +710,11 @@ static void start_read_threads(size_t num) /* {{{ */
       return;
     }
 
+    char name[THREAD_NAME_MAX];
+    ssnprintf(name, sizeof(name), "reader#%" PRIu64,
+              (uint64_t)read_threads_num);
     set_thread_name(read_threads[read_threads_num], name);
+
     read_threads_num++;
   } /* for (i) */
 } /* }}} void start_read_threads */
@@ -839,9 +829,10 @@ static int plugin_write_enqueue(value_list_t const *vl) /* {{{ */
   return 0;
 } /* }}} int plugin_write_enqueue */
 
-static write_queue_t *plugin_write_dequeue(void) /* {{{ */
+static value_list_t *plugin_write_dequeue(void) /* {{{ */
 {
   write_queue_t *q;
+  value_list_t *vl;
 
   pthread_mutex_lock(&write_lock);
 
@@ -854,57 +845,32 @@ static write_queue_t *plugin_write_dequeue(void) /* {{{ */
   }
 
   q = write_queue_head;
-  if (batch_size_g == 1) {
-    write_queue_head = q->next;
-    write_queue_length -= 1;
-    if (write_queue_head == NULL) {
-      write_queue_tail = NULL;
-      assert(0 == write_queue_length);
-    }
-    q->next = NULL;
-  } else {
-    write_queue_t *q_next = q;
-    write_queue_t *q_last = NULL;
-    for (size_t i=0; i < batch_size_g; i++) {
-      if (q_next == NULL)
-        break;
-      q_last = q_next;
-      q_next = q_next->next;
-      write_queue_head = q_next;
-      write_queue_length -= 1;
-    }
-    if (q_last != NULL)
-      q_last->next = NULL;
-    if (q_next == NULL) {
-      write_queue_tail = NULL;
-      assert(0 == write_queue_length);
-    }
+  write_queue_head = q->next;
+  write_queue_length -= 1;
+  if (write_queue_head == NULL) {
+    write_queue_tail = NULL;
+    assert(0 == write_queue_length);
   }
 
   pthread_mutex_unlock(&write_lock);
 
-  return q;
-} /* }}} write_queue_t *plugin_write_dequeue */
+  (void)plugin_set_ctx(q->ctx);
+
+  vl = q->vl;
+  sfree(q);
+  return vl;
+} /* }}} value_list_t *plugin_write_dequeue */
 
 static void *plugin_write_thread(void __attribute__((unused)) * args) /* {{{ */
 {
   while (write_loop) {
-    write_queue_t *q = plugin_write_dequeue();
-    while (q != NULL) {
-      value_list_t *vl = q->vl;
-      if (vl == NULL)
-        continue;
+    value_list_t *vl = plugin_write_dequeue();
+    if (vl == NULL)
+      continue;
 
-      (void)plugin_set_ctx(q->ctx);
+    plugin_dispatch_values_internal(vl);
 
-      plugin_dispatch_values_internal(vl);
-
-      plugin_value_list_free(vl);
-
-      write_queue_t *q_next = q->next;
-      sfree(q);
-      q = q_next;
-    }
+    plugin_value_list_free(vl);
   }
 
   pthread_exit(NULL);
@@ -924,15 +890,9 @@ static void start_write_threads(size_t num) /* {{{ */
 
   write_threads_num = 0;
   for (size_t i = 0; i < num; i++) {
-    char name[THREAD_NAME_MAX];
-    ssnprintf(name, sizeof(name), "writer#%" PRIu64, (uint64_t)write_threads_num);
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    set_thread_setaffinity(&attr, name);
     int status = pthread_create(write_threads + write_threads_num,
-                                &attr, plugin_write_thread,
+                                /* attr = */ NULL, plugin_write_thread,
                                 /* arg = */ NULL);
-    pthread_attr_destroy(&attr);
     if (status != 0) {
       ERROR("plugin: start_write_threads: pthread_create failed with status %i "
             "(%s).",
@@ -940,7 +900,11 @@ static void start_write_threads(size_t num) /* {{{ */
       return;
     }
 
+    char name[THREAD_NAME_MAX];
+    ssnprintf(name, sizeof(name), "writer#%" PRIu64,
+              (uint64_t)write_threads_num);
     set_thread_name(write_threads[write_threads_num], name);
+
     write_threads_num++;
   } /* for (i) */
 } /* }}} void start_write_threads */
@@ -2463,7 +2427,9 @@ static double get_drop_probability(void) /* {{{ */
   long size;
   long wql;
 
+  pthread_mutex_lock(&write_lock);
   wql = write_queue_length;
+  pthread_mutex_unlock(&write_lock);
 
   if (wql < write_limit_low)
     return 0.0;
@@ -2535,34 +2501,6 @@ EXPORT int plugin_dispatch_values(value_list_t const *vl) {
           status, STRERROR(status));
     return status;
   }
-
-  return 0;
-}
-
-EXPORT int plugin_dispatch_write_queue(write_queue_t *head, write_queue_t *tail, size_t size) {
-  if (check_drop_value()) {
-    if (record_statistics) {
-      pthread_mutex_lock(&statistics_lock);
-      stats_values_dropped++;
-      pthread_mutex_unlock(&statistics_lock);
-    }
-    return 0;
-  }
-
-  pthread_mutex_lock(&write_lock);
-
-  if (write_queue_tail == NULL) {
-    write_queue_head = head;
-    write_queue_tail = tail;
-    write_queue_length = size;
-  } else {
-    write_queue_tail->next = head;
-    write_queue_tail = tail;
-    write_queue_length += size;
-  }
-
-  pthread_cond_signal(&write_cond);
-  pthread_mutex_unlock(&write_lock);
 
   return 0;
 }
@@ -3049,13 +2987,7 @@ int plugin_thread_create(pthread_t *thread, void *(*start_routine)(void *),
   plugin_thread->start_routine = start_routine;
   plugin_thread->arg = arg;
 
-  pthread_attr_t attr;
-  pthread_attr_init(&attr);
-  if (name != NULL)
-    set_thread_setaffinity(&attr, name);
-
-  int ret = pthread_create(thread, &attr, plugin_thread_start, plugin_thread);
-  pthread_attr_destroy(&attr);
+  int ret = pthread_create(thread, NULL, plugin_thread_start, plugin_thread);
   if (ret != 0) {
     sfree(plugin_thread);
     return ret;

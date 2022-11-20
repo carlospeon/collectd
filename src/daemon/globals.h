@@ -48,5 +48,4 @@ extern char *hostname_g;
 extern cdtime_t interval_g;
 extern int pidfile_from_cli;
 extern int timeout_g;
-extern int batch_size_g;
 #endif /* GLOBALS_H */

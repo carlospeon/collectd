@@ -80,14 +80,6 @@ typedef struct cf_global_option_s {
   const char *def;
 } cf_global_option_t;
 
-typedef struct {
-  char *name;
-  int num;
-} cf_cpumap_t;
-
-static int cf_cpumap_num;
-static cf_cpumap_t *cf_cpumap;
-
 /*
  * Prototypes of callback functions
  */
@@ -95,7 +87,6 @@ static int dispatch_value_typesdb(oconfig_item_t *ci);
 static int dispatch_value_plugindir(oconfig_item_t *ci);
 static int dispatch_loadplugin(oconfig_item_t *ci);
 static int dispatch_block_plugin(oconfig_item_t *ci);
-static int dispatch_block_cpumap(oconfig_item_t *ci);
 
 /*
  * Private variables
@@ -106,8 +97,7 @@ static cf_complex_callback_t *complex_callback_head;
 static cf_value_map_t cf_value_map[] = {{"TypesDB", dispatch_value_typesdb},
                                         {"PluginDir", dispatch_value_plugindir},
                                         {"LoadPlugin", dispatch_loadplugin},
-                                        {"Plugin", dispatch_block_plugin},
-                                        {"CpuMap", dispatch_block_cpumap}};
+                                        {"Plugin", dispatch_block_plugin}};
 static int cf_value_map_num = STATIC_ARRAY_SIZE(cf_value_map);
 
 static cf_global_option_t cf_global_options[] = {
@@ -127,8 +117,7 @@ static cf_global_option_t cf_global_options[] = {
     {"PreCacheChain", NULL, 0, "PreCache"},
     {"PostCacheChain", NULL, 0, "PostCache"},
     {"NormalizeTime", NULL, 0, "false"},
-    {"MaxReadInterval", NULL, 0, "86400"},
-    {"BatchSize", NULL, 0, "1"}};
+    {"MaxReadInterval", NULL, 0, "86400"}};
 static int cf_global_options_num = STATIC_ARRAY_SIZE(cf_global_options);
 
 static int cf_default_typesdb = 1;
@@ -244,41 +233,6 @@ static int dispatch_global_option(const oconfig_item_t *ci) {
 
   return -1;
 } /* int dispatch_global_option */
-
-static int dispatch_block_cpumap(oconfig_item_t *ci) {
-  assert(strcasecmp(ci->key, "CpuMap") == 0);
-
-  cf_default_typesdb = 0;
-
-  if (ci->values_num != 2) {
-    ERROR("configfile: `CpuMap' needs exactly two arguments.");
-    return -1;
-  }
-  if (ci->values[0].type != OCONFIG_TYPE_STRING) {
-    ERROR("configfile: `CpuMap' first argument bust be a string.");
-    return -1;
-  }
-
-  if (ci->values[1].type != OCONFIG_TYPE_NUMBER) {
-    ERROR("configfile: `CpuMap' seconds argument bust be a number.");
-    return -1;
-  }
-
-  cf_cpumap_t *tmp = realloc(cf_cpumap, sizeof(*tmp) * (cf_cpumap_num+1));
-  if (tmp == NULL) {
-    ERROR("configfile: realloc failed.");
-    return -1;
-  }
-  cf_cpumap = tmp;
-  cf_cpumap[cf_cpumap_num].name = strdup(ci->values[0].value.string);
-  if (cf_cpumap[cf_cpumap_num].name == NULL) {
-    ERROR("configfile: strdup failed.");
-    return -1;
-  }
-  cf_cpumap[cf_cpumap_num].num = ci->values[1].value.number;
-  cf_cpumap_num++;
-  return 0;
-}
 
 static int dispatch_value_typesdb(oconfig_item_t *ci) {
   assert(strcasecmp(ci->key, "TypesDB") == 0);
@@ -1318,17 +1272,3 @@ int cf_util_get_cdtime(const oconfig_item_t *ci, cdtime_t *ret_value) /* {{{ */
 
   return 0;
 } /* }}} int cf_util_get_cdtime */
-
-int cf_get_cpumap(const char *name)
-{
-  if (cf_cpumap == NULL)
-    return -1;
-
-  for(int i=0; i < cf_cpumap_num; i++) {
-    if (strcasecmp(cf_cpumap[i].name, name) == 0) {
-      return cf_cpumap[i].num;
-    }
-  }
-
-  return -1;
-}
