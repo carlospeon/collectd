@@ -83,6 +83,7 @@ typedef struct sockent {
 static int wifxudp_config_ttl;
 static size_t wifxudp_config_packet_size = NET_DEFAULT_PACKET_SIZE;
 static bool wifxudp_config_store_rates;
+static bool wifxudp_config_write_meta;
 static format_influxdb_time_precision_t wifxudp_config_time_precision = MS;
 
 static sockent_t *sending_sockets;
@@ -355,9 +356,9 @@ static void write_influxdb_udp_send_buffer(sockent_t *sending_socket,
 
 static void flush_buffer(buffer_t *buffer) {
   for (sockent_t *se = sending_sockets; se != NULL; se = se->next) {
-    //pthread_mutex_lock(&se->lock);
+    pthread_mutex_lock(&se->lock);
     write_influxdb_udp_send_buffer(se, buffer);
-    //pthread_mutex_unlock(&se->lock);
+    pthread_mutex_unlock(&se->lock);
   }
   write_influxdb_udp_init_buffer(buffer);
 }
@@ -394,17 +395,15 @@ write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
   }
 
   
-  int status = format_influxdb_value_list(send_buffer.ptr, 
-                                          wifxudp_config_packet_size - send_buffer.fill,
-                                          ds, vl, wifxudp_config_store_rates,
-                                          wifxudp_config_time_precision);
+  int status = format_influxdb_value_list(send_buffer.ptr, wifxudp_config_packet_size - send_buffer.fill,
+                                          ds, vl, wifxudp_config_time_precision,
+                                          wifxudp_config_store_rates, wifxudp_config_write_meta);
 
   if (status < 0) {
     flush_buffer(&send_buffer);
-    status = format_influxdb_value_list(send_buffer.ptr, 
-                                        wifxudp_config_packet_size - send_buffer.fill,
-                                        ds, vl, wifxudp_config_store_rates,
-                                        wifxudp_config_time_precision);
+    status = format_influxdb_value_list(send_buffer.ptr, wifxudp_config_packet_size - send_buffer.fill,
+                                        ds, vl, wifxudp_config_time_precision,
+                                        wifxudp_config_store_rates, wifxudp_config_write_meta);
   }
   if (status < 0) {
     ERROR("write_influxdb_udp plugin: write_influxdb_udp_write write_influxdb_point failed.");
@@ -557,6 +556,8 @@ static int write_influxdb_udp_config(oconfig_item_t *ci) {
       wifxudp_config_set_time_precision(child);
     else if (strcasecmp("StoreRates", child->key) == 0)
       cf_util_get_boolean(child, &wifxudp_config_store_rates);
+    else if (strcasecmp("WriteMetadata", child->key) == 0)
+      cf_util_get_boolean(child, &wifxudp_config_write_meta);
     else {
       WARNING("write_influxdb_udp plugin: "
               "Option `%s' is not allowed here.",
