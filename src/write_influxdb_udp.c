@@ -321,19 +321,11 @@ static void sockent_destroy(sockent_t *se) {
   }
 } /* void sockent_destroy */
 
-<<<<<<< HEAD
-static void write_influxdb_udp_init_buffer(void) {
-  memset(send_buffer, 0, wifxudp_config_packet_size);
-  send_buffer_ptr = send_buffer;
-  send_buffer_fill = 0;
-  send_buffer_first_write = 0;
-=======
 static void write_influxdb_udp_init_buffer(buffer_t *buffer) {
   memset(buffer->data, 0, wifxudp_config_packet_size);
   buffer->ptr = buffer->data;
   buffer->fill = 0;
   buffer->last_update = 0;
->>>>>>> 6cff6110 (Merge itx patches)
 } /* write_influxdb_udp_init_buffer */
 
 static void write_influxdb_udp_send_buffer(sockent_t *sending_socket,
@@ -364,9 +356,9 @@ static void write_influxdb_udp_send_buffer(sockent_t *sending_socket,
 
 static void flush_buffer(buffer_t *buffer) {
   for (sockent_t *se = sending_sockets; se != NULL; se = se->next) {
-    //pthread_mutex_lock(&se->lock);
+    pthread_mutex_lock(&se->lock);
     write_influxdb_udp_send_buffer(se, buffer);
-    //pthread_mutex_unlock(&se->lock);
+    pthread_mutex_unlock(&se->lock);
   }
   write_influxdb_udp_init_buffer(buffer);
 }
@@ -376,11 +368,6 @@ write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
                          user_data_t __attribute__((unused)) * user_data) {
   pthread_mutex_lock(&send_buffer.mutex);
 
-<<<<<<< HEAD
-  int status = format_influxdb_value_list(
-      buffer, NET_DEFAULT_PACKET_SIZE, ds, vl, wifxudp_config_time_precision,
-      wifxudp_config_store_rates, wifxudp_config_write_meta);
-=======
   if (send_buffer.data == NULL) {
     send_buffer.data = malloc(wifxudp_config_packet_size);
     if (send_buffer.data == NULL) {
@@ -408,18 +395,15 @@ write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
   }
 
   
-  int status = format_influxdb_value_list(send_buffer.ptr, 
-                                          wifxudp_config_packet_size - send_buffer.fill,
-                                          ds, vl, wifxudp_config_store_rates,
-                                          wifxudp_config_time_precision);
->>>>>>> 6cff6110 (Merge itx patches)
+  int status = format_influxdb_value_list(send_buffer.ptr, wifxudp_config_packet_size - send_buffer.fill,
+                                          ds, vl, wifxudp_config_time_precision,
+                                          wifxudp_config_store_rates, wifxudp_config_write_meta);
 
   if (status < 0) {
     flush_buffer(&send_buffer);
-    status = format_influxdb_value_list(send_buffer.ptr, 
-                                        wifxudp_config_packet_size - send_buffer.fill,
-                                        ds, vl, wifxudp_config_store_rates,
-                                        wifxudp_config_time_precision);
+    status = format_influxdb_value_list(send_buffer.ptr, wifxudp_config_packet_size - send_buffer.fill,
+                                        ds, vl, wifxudp_config_time_precision,
+                                        wifxudp_config_store_rates, wifxudp_config_write_meta);
   }
   if (status < 0) {
     ERROR("write_influxdb_udp plugin: write_influxdb_udp_write write_influxdb_point failed.");
@@ -436,16 +420,7 @@ write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
   send_buffer.ptr += status;
   send_buffer.last_update = cdtime();
 
-<<<<<<< HEAD
-  send_buffer_fill += status;
-  send_buffer_ptr += status;
-  if (send_buffer_first_write == 0)
-    send_buffer_first_write = cdtime();
-
-  if (wifxudp_config_packet_size - send_buffer_fill < 120)
-=======
   if (wifxudp_config_packet_size - send_buffer.fill < 120)
->>>>>>> 6cff6110 (Merge itx patches)
     /* No room for a new point of average size in buffer,
        the probability of fail for the new point is bigger than
        the probability of success */
@@ -641,16 +616,6 @@ static int write_influxdb_udp_flush(cdtime_t timeout,
                                     const char *identifier,
                                     __attribute__((unused))
                                     user_data_t *user_data) {
-<<<<<<< HEAD
-  pthread_mutex_lock(&send_buffer_lock);
-
-  if (send_buffer_fill > 0) {
-    if (timeout > 0) {
-      cdtime_t now = cdtime();
-      if ((send_buffer_first_write + timeout) > now) {
-        pthread_mutex_unlock(&send_buffer_lock);
-        return 0;
-=======
   for (buffer_node_t *buffer_node = buffer_list_head; 
        buffer_node != NULL; buffer_node = buffer_node->next) {
     pthread_mutex_lock(&buffer_node->buffer->mutex);
@@ -661,7 +626,6 @@ static int write_influxdb_udp_flush(cdtime_t timeout,
           pthread_mutex_unlock(&buffer_node->buffer->mutex);
           continue;
         }
->>>>>>> 6cff6110 (Merge itx patches)
       }
       flush_buffer(buffer_node->buffer);
     }
