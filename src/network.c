@@ -288,7 +288,7 @@ static int listen_loop;
 static int receive_thread_running;
 static pthread_t receive_thread_id;
 static int dispatch_threads_running;
-static int dispatch_threads_size = 1;
+static int dispatch_threads_number = 1;
 static pthread_t *dispatch_threads_id;
 
 /* Buffer in which to-be-sent network packets are constructed. */
@@ -298,6 +298,11 @@ static int send_buffer_fill;
 static cdtime_t send_buffer_last_update;
 static value_list_t send_buffer_vl = VALUE_LIST_INIT;
 static pthread_mutex_t send_buffer_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Dispatch threads write queue */
+static __thread write_queue_t *write_queue_head;
+static __thread write_queue_t *write_queue_tail;
+static __thread long write_queue_length;
 
 /* XXX: These counters are incremented from one place only. The spot in which
  * the values are incremented is either only reachable by one thread (the
@@ -309,8 +314,15 @@ static derive_t stats_octets_rx;
 static derive_t stats_octets_tx;
 static derive_t stats_packets_rx;
 static derive_t stats_packets_tx;
-static derive_t stats_values_dispatched;
-static derive_t stats_values_not_dispatched;
+// static __thread derive_t *stats_values_dispatched;
+// static __thread derive_t *stats_values_not_dispatched;
+typedef struct stats_dispatched {
+  derive_t accepted;
+  derive_t rejected;
+} stats_dispatched_t;
+static stats_dispatched_t *stats_dispatched;
+static __thread stats_dispatched_t *stats_values_dispatched;
+
 static derive_t stats_values_sent;
 static derive_t stats_values_not_sent;
 static pthread_mutex_t stats_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -359,7 +371,7 @@ static bool check_send_okay(const value_list_t *vl) /* {{{ */
   return !received;
 } /* }}} bool check_send_okay */
 
-static int network_dispatch_values(value_list_t *vl, /* {{{ */
+static int network_enqueue_values(value_list_t *vl, /* {{{ */
                                    const char *username,
                                    struct sockaddr_storage *address) {
   int status;
@@ -373,11 +385,11 @@ static int network_dispatch_values(value_list_t *vl, /* {{{ */
     char name[6 * DATA_MAX_NAME_LEN];
     FORMAT_VL(name, sizeof(name), vl);
     name[sizeof(name) - 1] = '\0';
-    DEBUG("network plugin: network_dispatch_values: "
+    DEBUG("network plugin: network_enqueue_values: "
           "NOT dispatching %s.",
           name);
 #endif
-    stats_values_not_dispatched++;
+    stats_values_dispatched->rejected++;
     return 0;
   }
 
@@ -428,14 +440,40 @@ static int network_dispatch_values(value_list_t *vl, /* {{{ */
     }
   }
 
-  plugin_dispatch_values(vl);
-  stats_values_dispatched++;
+  write_queue_t *q = malloc(sizeof(*q));
+  if (q == NULL) {
+    meta_data_destroy(vl->meta);
+    vl->meta = NULL;
+    return -ENOMEM;
+  }
+  q->next = NULL;
+
+  q->vl = plugin_value_list_clone(vl);
+  if (q->vl == NULL) {
+    meta_data_destroy(vl->meta);
+    vl->meta = NULL;
+    sfree(q);
+    return -ENOMEM;
+  }
+
+  /* Store context of caller (read plugin); otherwise, it would not be
+   * available to the write plugins when actually dispatching the
+   * value-list later on. */
+  q->ctx = plugin_get_ctx();
+
+  if (write_queue_tail == NULL) {
+    write_queue_head = q;
+  } else {
+    write_queue_tail->next = q;
+  }
+  write_queue_tail = q;
+  write_queue_length += 1;
 
   meta_data_destroy(vl->meta);
   vl->meta = NULL;
 
   return 0;
-} /* }}} int network_dispatch_values */
+} /* }}} int network_enqueue_values */
 
 static int network_dispatch_notification(notification_t *n) /* {{{ */
 {
@@ -1392,8 +1430,7 @@ static int parse_packet(sockent_t *se, /* {{{ */
       if (status != 0)
         break;
 
-      network_dispatch_values(&vl, username, address);
-
+      network_enqueue_values(&vl, username, address);
       sfree(vl.values);
     } else if (pkg_type == TYPE_TIME) {
       uint64_t tmp = 0;
@@ -2167,10 +2204,13 @@ static int sockent_add(sockent_t *se) /* {{{ */
   return 0;
 } /* }}} int sockent_add */
 
-static void *dispatch_thread(void __attribute__((unused)) * arg) /* {{{ */
+static void *dispatch_thread(void *stats) /* {{{ */
 {
+
+  stats_values_dispatched = (stats_dispatched_t*) stats;
+
   while (42) {
-    receive_list_entry_t *ent;
+    receive_list_entry_t *ent_head;
     sockent_t *se;
 
     /* Lock and wait for more data to come in */
@@ -2179,45 +2219,54 @@ static void *dispatch_thread(void __attribute__((unused)) * arg) /* {{{ */
       pthread_cond_wait(&receive_list_cond, &receive_list_lock);
 
     /* Remove the head entry and unlock */
-    ent = receive_list_head;
-    if (ent != NULL)
-      receive_list_head = ent->next;
-    receive_list_length--;
+    ent_head = receive_list_head;
+    receive_list_head = NULL;
+    receive_list_tail = NULL;
+    receive_list_length = 0;
     pthread_mutex_unlock(&receive_list_lock);
 
     /* Check whether we are supposed to exit. We do NOT check `listen_loop'
      * because we dispatch all missing packets before shutting down. */
-    if (ent == NULL)
+    if (ent_head == NULL)
       break;
 
-    /* Look for the correct `sockent_t' */
-    se = listen_sockets;
-    while (se != NULL) {
-      size_t i;
+    receive_list_entry_t *ent;
+    while ((ent = ent_head) != NULL) {
+      /* Look for the correct `sockent_t' */
+      se = listen_sockets;
+      while (se != NULL) {
+        size_t i;
 
-      for (i = 0; i < se->data.server.fd_num; i++)
-        if (se->data.server.fd[i] == ent->fd)
+        for (i = 0; i < se->data.server.fd_num; i++)
+          if (se->data.server.fd[i] == ent->fd)
+            break;
+
+        if (i < se->data.server.fd_num)
           break;
 
-      if (i < se->data.server.fd_num)
-        break;
+        se = se->next;
+      }
 
-      se = se->next;
-    }
-
-    if (se == NULL) {
-      ERROR("network plugin: Got packet from FD %i, but can't "
-            "find an appropriate socket entry.",
-            ent->fd);
+      if (se == NULL) {
+        ERROR("network plugin: Got packet from FD %i, but can't "
+              "find an appropriate socket entry.",
+              ent->fd);
+      } else {
+        parse_packet(se, ent->data, ent->data_len, /* flags = */ 0,
+                    /* username = */ NULL, &ent->sender);
+      }
+      ent_head = ent->next;
       sfree(ent->data);
       sfree(ent);
-      continue;
     }
 
-    parse_packet(se, ent->data, ent->data_len, /* flags = */ 0,
-                 /* username = */ NULL, &ent->sender);
-    sfree(ent->data);
-    sfree(ent);
+    plugin_dispatch_value_queue(write_queue_head, write_queue_tail, write_queue_length);
+    stats_values_dispatched->accepted += write_queue_length;
+
+    write_queue_head = NULL;
+    write_queue_tail = NULL;
+    write_queue_length = 0;
+
   } /* while (42) */
 
   return NULL;
@@ -2296,7 +2345,7 @@ static int network_receive(void) /* {{{ */
       ent->data_len = buffer_len;
       memcpy(&ent->sender, &address, sizeof(ent->sender));
 
-      if (private_list_head == NULL)
+      if (private_list_tail == NULL)
         private_list_head = ent;
       else
         private_list_tail->next = ent;
@@ -2309,7 +2358,7 @@ static int network_receive(void) /* {{{ */
         assert(((receive_list_head == NULL) && (receive_list_length == 0)) ||
                ((receive_list_head != NULL) && (receive_list_length != 0)));
 
-        if (receive_list_head == NULL)
+        if (receive_list_tail == NULL)
           receive_list_head = private_list_head;
         else
           receive_list_tail->next = private_list_head;
@@ -2335,7 +2384,7 @@ static int network_receive(void) /* {{{ */
   if (private_list_head != NULL) {
     pthread_mutex_lock(&receive_list_lock);
 
-    if (receive_list_head == NULL)
+    if (receive_list_tail == NULL)
       receive_list_head = private_list_head;
     else
       receive_list_tail->next = private_list_head;
@@ -2996,7 +3045,7 @@ static int network_config_set_dispatch_threads (const oconfig_item_t *ci) /* {{{
 
   tmp = (int) ci->values[0].value.number;
   if (tmp > 0)
-    dispatch_threads_size = tmp;
+    dispatch_threads_number = tmp;
 
   return (0);
 } /* }}} int network_config_set_dispatch_threads */
@@ -3114,13 +3163,12 @@ static int network_shutdown(void) {
 
   /* Shutdown the dispatching thread */
   if (dispatch_threads_running != 0) {
-    int n;
     INFO("network plugin: Stopping dispatch thread.");
     pthread_mutex_lock(&receive_list_lock);
     pthread_cond_broadcast(&receive_list_cond);
     pthread_mutex_unlock(&receive_list_lock);
-    for (n =0 ; n < dispatch_threads_size; n++) 
-      pthread_join (dispatch_threads_id[n], /* ret = */ NULL);
+    for (int i = 0 ; i < dispatch_threads_number; i++)
+      pthread_join (dispatch_threads_id[i], /* ret = */ NULL);
     dispatch_threads_running = 0;
   }
 
@@ -3163,8 +3211,12 @@ static int network_stats_read(void) /* {{{ */
   copy_octets_tx = stats_octets_tx;
   copy_packets_rx = stats_packets_rx;
   copy_packets_tx = stats_packets_tx;
-  copy_values_dispatched = stats_values_dispatched;
-  copy_values_not_dispatched = stats_values_not_dispatched;
+  copy_values_dispatched = 0;
+  copy_values_not_dispatched = 0;
+  for (int i = 0; i < dispatch_threads_number; i++) {
+    copy_values_dispatched += stats_dispatched[i].accepted;
+    copy_values_not_dispatched += stats_dispatched[i].rejected;
+  }
   copy_values_sent = stats_values_sent;
   copy_values_not_sent = stats_values_not_sent;
   copy_receive_list_length = receive_list_length;
@@ -3251,20 +3303,23 @@ static int network_init(void) {
     return 0;
 
   if (dispatch_threads_id == NULL) {
-    dispatch_threads_id = calloc(sizeof(pthread_t),dispatch_threads_size);
+    dispatch_threads_id = calloc(sizeof(pthread_t), dispatch_threads_number);
     if (dispatch_threads_id == NULL) {
       ERROR ("network plugin: dispatch_threads_id: calloc failed.");
-      return (-1);
+      return -1;
     }
   }
 
   if (dispatch_threads_running == 0) {
-    int status;
-    int n;
 
-    for (n =0 ; n < dispatch_threads_size; n++)  {
-      status = plugin_thread_create(&dispatch_threads_id[n],
-                                    dispatch_thread, NULL /* no argument */,
+    stats_dispatched = calloc(dispatch_threads_number, sizeof(*stats_dispatched));
+    if (stats_dispatched == NULL) {
+      ERROR ("network plugin: stats_dispatched: calloc failed.");
+      return -1;
+    }
+    for (int i = 0 ; i < dispatch_threads_number; i++)  {
+      int status = plugin_thread_create(&dispatch_threads_id[i],
+                                    dispatch_thread, (void*) &stats_dispatched[i],
                                     "network disp");
       if (status != 0) {
         char errbuf[1024];
@@ -3277,9 +3332,8 @@ static int network_init(void) {
     }
   }
   if (receive_thread_running == 0) {
-    int status;
-    status = plugin_thread_create(&receive_thread_id, receive_thread,
-                                  NULL /* no argument */, "network recv");
+    int status = plugin_thread_create(&receive_thread_id, receive_thread,
+                                      NULL /* no argument */, "network recv");
     if (status != 0) {
       ERROR("network: pthread_create failed: %s", STRERRNO);
     } else {

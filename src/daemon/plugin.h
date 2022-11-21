@@ -188,6 +188,12 @@ struct plugin_ctx_s {
 };
 typedef struct plugin_ctx_s plugin_ctx_t;
 
+typedef struct write_queue_s {
+  value_list_t *vl;
+  plugin_ctx_t ctx;
+  struct write_queue_s *next;
+} write_queue_t;
+
 /*
  * Callback types
  */
@@ -364,6 +370,10 @@ void plugin_log_available_writers(void);
  */
 int plugin_dispatch_values(value_list_t const *vl);
 
+int plugin_dispatch_value_queue(write_queue_t *vl_queue_head,
+                                write_queue_t *vl_queue_tail,
+                                long length);
+
 /*
  * NAME
  *  plugin_dispatch_multivalue
@@ -399,6 +409,8 @@ int plugin_dispatch_values(value_list_t const *vl);
 __attribute__((sentinel)) int plugin_dispatch_multivalue(value_list_t const *vl,
                                                          bool store_percentage,
                                                          int store_type, ...);
+
+value_list_t *plugin_value_list_clone(value_list_t const *vl_orig);
 
 int plugin_dispatch_missing(const value_list_t *vl);
 void plugin_dispatch_cache_event(enum cache_event_type_e event_type,

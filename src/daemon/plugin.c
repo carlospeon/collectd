@@ -100,14 +100,6 @@ struct notification_queue_s {
   notification_queue_t *next;
 };
 
-struct write_queue_s;
-typedef struct write_queue_s write_queue_t;
-struct write_queue_s {
-  value_list_t *vl;
-  plugin_ctx_t ctx;
-  write_queue_t *next;
-};
-
 struct flush_callback_s {
   char *name;
   cdtime_t timeout;
@@ -751,7 +743,7 @@ static void plugin_value_list_free(value_list_t *vl) /* {{{ */
   sfree(vl);
 } /* }}} void plugin_value_list_free */
 
-static value_list_t *
+EXPORT value_list_t *
 plugin_value_list_clone(value_list_t const *vl_orig) /* {{{ */
 {
   value_list_t *vl;
@@ -829,11 +821,27 @@ static int plugin_write_enqueue(value_list_t const *vl) /* {{{ */
   return 0;
 } /* }}} int plugin_write_enqueue */
 
-static value_list_t *plugin_write_dequeue(void) /* {{{ */
-{
-  write_queue_t *q;
-  value_list_t *vl;
+static int plugin_write_enqueue_queue(write_queue_t *vl_queue_head,
+                                      write_queue_t *vl_queue_tail,
+                                      long length) {
+  pthread_mutex_lock(&write_lock);
 
+  if (write_queue_tail == NULL) {
+    write_queue_head = vl_queue_head;
+  } else {
+    write_queue_tail->next = vl_queue_head;
+  }
+  write_queue_tail = vl_queue_tail;
+  write_queue_length += length;
+
+  pthread_cond_signal(&write_cond);
+  pthread_mutex_unlock(&write_lock);
+
+  return 0;
+} /* int plugin_write_enqueue_queue */
+
+static write_queue_t *plugin_write_dequeue(void) /* {{{ */
+{
   pthread_mutex_lock(&write_lock);
 
   while (write_loop && (write_queue_head == NULL))
@@ -844,33 +852,32 @@ static value_list_t *plugin_write_dequeue(void) /* {{{ */
     return NULL;
   }
 
-  q = write_queue_head;
-  write_queue_head = q->next;
-  write_queue_length -= 1;
-  if (write_queue_head == NULL) {
-    write_queue_tail = NULL;
-    assert(0 == write_queue_length);
-  }
+  write_queue_t *q = write_queue_head;
+
+  write_queue_head = NULL;
+  write_queue_tail = NULL;
+  write_queue_length = 0;
 
   pthread_mutex_unlock(&write_lock);
 
-  (void)plugin_set_ctx(q->ctx);
-
-  vl = q->vl;
-  sfree(q);
-  return vl;
-} /* }}} value_list_t *plugin_write_dequeue */
+  return q;
+} /* }}} write_queue_t *plugin_write_dequeue */
 
 static void *plugin_write_thread(void __attribute__((unused)) * args) /* {{{ */
 {
   while (write_loop) {
-    value_list_t *vl = plugin_write_dequeue();
-    if (vl == NULL)
+    write_queue_t *q_head = plugin_write_dequeue();
+    if (q_head == NULL)
       continue;
 
-    plugin_dispatch_values_internal(vl);
-
-    plugin_value_list_free(vl);
+    write_queue_t *q;
+    while ((q = q_head) != NULL) {
+      (void)plugin_set_ctx(q->ctx);
+      plugin_dispatch_values_internal(q->vl);
+      plugin_value_list_free(q->vl);
+      q_head = q->next;
+      sfree(q);
+    }
   }
 
   pthread_exit(NULL);
@@ -2485,6 +2492,8 @@ static bool check_drop_value(void) /* {{{ */
 EXPORT int plugin_dispatch_values(value_list_t const *vl) {
   int status;
 
+  assert(vl != NULL);
+
   if (check_drop_value()) {
     if (record_statistics) {
       pthread_mutex_lock(&statistics_lock);
@@ -2497,6 +2506,31 @@ EXPORT int plugin_dispatch_values(value_list_t const *vl) {
   status = plugin_write_enqueue(vl);
   if (status != 0) {
     ERROR("plugin_dispatch_values: plugin_write_enqueue failed with status %i "
+          "(%s).",
+          status, STRERROR(status));
+    return status;
+  }
+
+  return 0;
+}
+
+EXPORT int plugin_dispatch_value_queue(write_queue_t *vl_queue_head,
+                                       write_queue_t *vl_queue_tail,
+                                       long length) {
+  int status;
+
+  if (check_drop_value()) {
+    if (record_statistics) {
+      pthread_mutex_lock(&statistics_lock);
+      stats_values_dropped += length;
+      pthread_mutex_unlock(&statistics_lock);
+    }
+    return 0;
+  }
+
+  status = plugin_write_enqueue_queue(vl_queue_head, vl_queue_tail, length);
+  if (status != 0) {
+    ERROR("plugin_dispatch_values: plugin_write_enqueue_queue failed with status %i "
           "(%s).",
           status, STRERROR(status));
     return status;
