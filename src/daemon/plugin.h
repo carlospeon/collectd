@@ -194,6 +194,13 @@ typedef struct write_queue_s {
   struct write_queue_s *next;
 } write_queue_t;
 
+typedef struct root_write_queue {
+  write_queue_t *head;
+  write_queue_t *tail;
+  long length;
+  struct root_write_queue *next;
+} root_write_queue_t;
+
 /*
  * Callback types
  */
@@ -370,9 +377,10 @@ void plugin_log_available_writers(void);
  */
 int plugin_dispatch_values(value_list_t const *vl);
 
-int plugin_dispatch_value_queue(write_queue_t *vl_queue_head,
-                                write_queue_t *vl_queue_tail,
-                                long length);
+root_write_queue_t* plugin_init_root_write_queue(void);
+int plugin_dispatch_value_queue(root_write_queue_t *root_head,
+                                root_write_queue_t *root_tail,
+                                long sum_length);
 
 /*
  * NAME
@@ -482,6 +490,8 @@ plugin_ctx_t plugin_set_ctx(plugin_ctx_t ctx);
  *  everything else fails, it will fall back to 10 seconds.
  */
 cdtime_t plugin_get_interval(void);
+
+size_t plugin_get_write_threads_num(void);
 
 /*
  * Context-aware thread management.

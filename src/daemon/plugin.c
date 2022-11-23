@@ -141,9 +141,9 @@ static pthread_t *read_threads;
 static size_t read_threads_num;
 static cdtime_t max_read_interval = DEFAULT_MAX_READ_INTERVAL;
 
-static write_queue_t *write_queue_head;
-static write_queue_t *write_queue_tail;
-static long write_queue_length;
+static root_write_queue_t *root_write_queue_head;
+static root_write_queue_t *root_write_queue_tail;
+static long root_write_queue_sum_length;
 static bool write_loop = true;
 static pthread_mutex_t write_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t write_cond = PTHREAD_COND_INITIALIZER;
@@ -183,7 +183,7 @@ static const char *plugin_get_dir(void) {
 }
 
 static int plugin_update_internal_statistics(void) { /* {{{ */
-  gauge_t copy_write_queue_length = (gauge_t)write_queue_length;
+  gauge_t copy_root_write_queue_sum_length = (gauge_t)root_write_queue_sum_length;
 
   /* Initialize `vl' */
   value_list_t vl = VALUE_LIST_INIT;
@@ -194,7 +194,7 @@ static int plugin_update_internal_statistics(void) { /* {{{ */
   sstrncpy(vl.plugin_instance, "write_queue", sizeof(vl.plugin_instance));
 
   /* Write queue : queue length */
-  vl.values = &(value_t){.gauge = copy_write_queue_length};
+  vl.values = &(value_t){.gauge = copy_root_write_queue_sum_length};
   vl.values_len = 1;
   sstrncpy(vl.type, "queue_length", sizeof(vl.type));
   vl.type_instance[0] = 0;
@@ -783,11 +783,20 @@ plugin_value_list_clone(value_list_t const *vl_orig) /* {{{ */
   return vl;
 } /* }}} value_list_t *plugin_value_list_clone */
 
+EXPORT root_write_queue_t* plugin_init_root_write_queue(void) {
+  root_write_queue_t *l = malloc(sizeof(*l));
+  if (l != NULL) {
+    l->head = NULL;
+    l->tail = NULL;
+    l->length = 0;
+    l->next = NULL;
+  }
+  return l;
+}
+
 static int plugin_write_enqueue(value_list_t const *vl) /* {{{ */
 {
-  write_queue_t *q;
-
-  q = malloc(sizeof(*q));
+  write_queue_t *q = malloc(sizeof(*q));
   if (q == NULL)
     return ENOMEM;
   q->next = NULL;
@@ -805,15 +814,25 @@ static int plugin_write_enqueue(value_list_t const *vl) /* {{{ */
 
   pthread_mutex_lock(&write_lock);
 
-  if (write_queue_tail == NULL) {
-    write_queue_head = q;
-    write_queue_tail = q;
-    write_queue_length = 1;
-  } else {
-    write_queue_tail->next = q;
-    write_queue_tail = q;
-    write_queue_length += 1;
+  if (root_write_queue_tail == NULL) {
+    root_write_queue_t *root_q = plugin_init_root_write_queue();
+    if (root_q == NULL) {
+      sfree(q);
+      pthread_mutex_unlock(&write_lock);
+      return ENOMEM;
+    }
+    root_write_queue_head = root_q;
+    root_write_queue_tail = root_q;
   }
+
+  if (root_write_queue_tail->tail == NULL) {
+    root_write_queue_tail->head = q;
+  } else {
+    root_write_queue_tail->tail->next = q;
+  }
+  root_write_queue_tail->tail = q;
+  root_write_queue_tail->length++;
+  root_write_queue_sum_length++;
 
   pthread_cond_signal(&write_cond);
   pthread_mutex_unlock(&write_lock);
@@ -821,20 +840,20 @@ static int plugin_write_enqueue(value_list_t const *vl) /* {{{ */
   return 0;
 } /* }}} int plugin_write_enqueue */
 
-static int plugin_write_enqueue_queue(write_queue_t *vl_queue_head,
-                                      write_queue_t *vl_queue_tail,
-                                      long length) {
+static int plugin_write_enqueue_queue(root_write_queue_t *head,
+                                      root_write_queue_t *tail,
+                                      long sum_length) {
   pthread_mutex_lock(&write_lock);
 
-  if (write_queue_tail == NULL) {
-    write_queue_head = vl_queue_head;
+  if (root_write_queue_tail == NULL) {
+    root_write_queue_head = head;
   } else {
-    write_queue_tail->next = vl_queue_head;
+    root_write_queue_tail->next = head;
   }
-  write_queue_tail = vl_queue_tail;
-  write_queue_length += length;
+  root_write_queue_tail = tail;
+  root_write_queue_sum_length += sum_length;
 
-  pthread_cond_signal(&write_cond);
+  pthread_cond_broadcast(&write_cond);
   pthread_mutex_unlock(&write_lock);
 
   return 0;
@@ -844,24 +863,27 @@ static write_queue_t *plugin_write_dequeue(void) /* {{{ */
 {
   pthread_mutex_lock(&write_lock);
 
-  while (write_loop && (write_queue_head == NULL))
+  while (write_loop && (root_write_queue_head == NULL))
     pthread_cond_wait(&write_cond, &write_lock);
 
-  if (write_queue_head == NULL) {
+  if (root_write_queue_head == NULL) {
     pthread_mutex_unlock(&write_lock);
     return NULL;
   }
 
-  write_queue_t *q = write_queue_head;
-
-  write_queue_head = NULL;
-  write_queue_tail = NULL;
-  write_queue_length = 0;
+  root_write_queue_t *rq = root_write_queue_head;
+  root_write_queue_head = root_write_queue_head->next;
+  root_write_queue_sum_length -= rq->length;
+  if (root_write_queue_head == NULL)
+    root_write_queue_tail = NULL;
 
   pthread_mutex_unlock(&write_lock);
 
+  write_queue_t *q = rq->head;
+  sfree(rq);
+
   return q;
-} /* }}} write_queue_t *plugin_write_dequeue */
+} /* }}} write_queue_t *plugin _write_dequeue */
 
 static void *plugin_write_thread(void __attribute__((unused)) * args) /* {{{ */
 {
@@ -918,9 +940,6 @@ static void start_write_threads(size_t num) /* {{{ */
 
 static void stop_write_threads(void) /* {{{ */
 {
-  write_queue_t *q;
-  size_t i;
-
   if (write_threads == NULL)
     return;
 
@@ -932,7 +951,7 @@ static void stop_write_threads(void) /* {{{ */
   pthread_cond_broadcast(&write_cond);
   pthread_mutex_unlock(&write_lock);
 
-  for (i = 0; i < write_threads_num; i++) {
+  for (size_t i = 0; i < write_threads_num; i++) {
     if (pthread_join(write_threads[i], NULL) != 0) {
       ERROR("plugin: stop_write_threads: pthread_join failed.");
     }
@@ -942,24 +961,28 @@ static void stop_write_threads(void) /* {{{ */
   write_threads_num = 0;
 
   pthread_mutex_lock(&write_lock);
-  i = 0;
-  for (q = write_queue_head; q != NULL;) {
-    write_queue_t *q1 = q;
-    plugin_value_list_free(q->vl);
-    q = q->next;
-    sfree(q1);
-    i++;
+
+  root_write_queue_t *rq;
+  while ((rq = root_write_queue_head) != NULL) {
+    write_queue_t *q;
+    while ((q = rq->head) != NULL) {
+      plugin_value_list_free(q->vl);
+      rq->head = q->next;
+      sfree(q);
+    }
+    root_write_queue_head = rq->next;
+    sfree(rq);
   }
-  write_queue_head = NULL;
-  write_queue_tail = NULL;
-  write_queue_length = 0;
+  root_write_queue_tail = NULL;
+  if (root_write_queue_sum_length > 0) {
+    WARNING("plugin: %ld value list%s left after shutting down "
+            "the write threads.",
+            root_write_queue_sum_length,
+            (root_write_queue_sum_length == 1) ? " was" : "s were");
+  }
+  root_write_queue_sum_length = 0;
   pthread_mutex_unlock(&write_lock);
 
-  if (i > 0) {
-    WARNING("plugin: %" PRIsz " value list%s left after shutting down "
-            "the write threads.",
-            i, (i == 1) ? " was" : "s were");
-  }
 } /* }}} void stop_write_threads */
 
 static notification_t *notification_dequeue(void) {
@@ -2435,7 +2458,7 @@ static double get_drop_probability(void) /* {{{ */
   long wql;
 
   pthread_mutex_lock(&write_lock);
-  wql = write_queue_length;
+  wql = root_write_queue_sum_length;
   pthread_mutex_unlock(&write_lock);
 
   if (wql < write_limit_low)
@@ -2514,21 +2537,21 @@ EXPORT int plugin_dispatch_values(value_list_t const *vl) {
   return 0;
 }
 
-EXPORT int plugin_dispatch_value_queue(write_queue_t *vl_queue_head,
-                                       write_queue_t *vl_queue_tail,
-                                       long length) {
+EXPORT int plugin_dispatch_value_queue(root_write_queue_t *head,
+                                       root_write_queue_t *tail,
+                                       long sum_length) {
   int status;
 
   if (check_drop_value()) {
     if (record_statistics) {
       pthread_mutex_lock(&statistics_lock);
-      stats_values_dropped += length;
+      stats_values_dropped += sum_length;
       pthread_mutex_unlock(&statistics_lock);
     }
     return 0;
   }
 
-  status = plugin_write_enqueue_queue(vl_queue_head, vl_queue_tail, length);
+  status = plugin_write_enqueue_queue(head, tail, sum_length);
   if (status != 0) {
     ERROR("plugin_dispatch_values: plugin_write_enqueue_queue failed with status %i "
           "(%s).",
@@ -3032,3 +3055,7 @@ int plugin_thread_create(pthread_t *thread, void *(*start_routine)(void *),
 
   return 0;
 } /* int plugin_thread_create */
+
+EXPORT size_t plugin_get_write_threads_num(void) {
+  return write_threads_num;
+}
