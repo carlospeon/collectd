@@ -2859,6 +2859,7 @@ static int network_write(const data_set_t *ds, const value_list_t *vl,
     buffer_node_t *buffer_node = malloc(sizeof(*buffer_node));
     if (buffer_node == NULL) {
       ERROR("network: network_write buffer_node malloc failed.");
+      sfree(send_buffer.data);
       pthread_mutex_unlock(&send_buffer.mutex);
       return -1;
     }
@@ -2895,6 +2896,7 @@ static int network_write(const data_set_t *ds, const value_list_t *vl,
     if (status >= 0) {
       send_buffer.fill += status;
       send_buffer.ptr += status;
+      send_buffer.last_update = cdtime();
 
       stats_values_sent++; //!!
     }
