@@ -304,6 +304,7 @@ static __thread root_write_queue_t *root_write_queue_head;
 static __thread root_write_queue_t *root_write_queue_tail;
 static __thread long root_write_queue_sum_length;
 static __thread root_write_queue_t *root_write_queue;
+static __thread char root_write_queue_host[DATA_MAX_NAME_LEN];
 
 /* XXX: These counters are incremented from one place only. The spot in which
  * the values are incremented is either only reachable by one thread (the
@@ -395,10 +396,16 @@ static int network_enqueue_write_queue(write_queue_t *q) {
       }
       root_write_queue_tail = rq;
     }
+    root_write_queue = root_write_queue_head;
+    sstrncpy(root_write_queue_host, q->vl.host, sizeof(root_write_queue_host));
   }
 
-  if (root_write_queue == NULL)
-    root_write_queue = root_write_queue_head;
+  if (strcmp(root_write_queue_host, q->vl.host) != 0) {
+    sstrncpy(root_write_queue_host, q->vl.host, sizeof(root_write_queue_host));
+    root_write_queue = root_write_queue->next;
+    if (root_write_queue == NULL)
+      root_write_queue = root_write_queue_head;
+  }
 
   if (root_write_queue->tail == NULL) {
     root_write_queue->head = q;
@@ -408,8 +415,6 @@ static int network_enqueue_write_queue(write_queue_t *q) {
   root_write_queue->tail = q;
   root_write_queue->length += 1;
   root_write_queue_sum_length += 1;
-
-  root_write_queue = root_write_queue->next;
 
   return 0;
 }
@@ -2310,7 +2315,6 @@ static void *dispatch_thread(void *stats) /* {{{ */
     root_write_queue_head = NULL;
     root_write_queue_tail = NULL;
     root_write_queue_sum_length = 0;
-    root_write_queue = NULL;
 
   } /* while (42) */
 
