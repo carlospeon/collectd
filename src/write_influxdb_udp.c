@@ -380,6 +380,7 @@ write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
     buffer_node_t *buffer_node = malloc(sizeof(*buffer_node));
     if (buffer_node == NULL) {
       ERROR("write_influxdb_udp: write_influxdb_udp_write buffer_node malloc failed.");
+      sfree(send_buffer.data);
       pthread_mutex_unlock(&send_buffer.mutex);
       return -1;
     }
