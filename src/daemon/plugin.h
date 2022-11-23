@@ -380,6 +380,7 @@ int plugin_dispatch_values(value_list_t const *vl);
 root_write_queue_t* plugin_init_root_write_queue(void);
 int plugin_dispatch_value_queue(root_write_queue_t *root_head,
                                 root_write_queue_t *root_tail,
+                                long length,
                                 long sum_length);
 
 /*

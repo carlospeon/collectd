@@ -292,16 +292,38 @@ static int dispatch_threads_number = 1;
 static pthread_t *dispatch_threads_id;
 
 /* Buffer in which to-be-sent network packets are constructed. */
-static char *send_buffer;
-static char *send_buffer_ptr;
-static int send_buffer_fill;
-static cdtime_t send_buffer_first_write;
-static value_list_t send_buffer_vl = VALUE_LIST_INIT;
-static pthread_mutex_t send_buffer_lock = PTHREAD_MUTEX_INITIALIZER;
+// static char *send_buffer;
+// static char *send_buffer_ptr;
+// static int send_buffer_fill;
+// static cdtime_t send_buffer_last_update;
+// static value_list_t send_buffer_vl = VALUE_LIST_INIT;
+// static pthread_mutex_t send_buffer_lock = PTHREAD_MUTEX_INITIALIZER;
+typedef struct buffer {
+  char *data;
+  char *ptr;
+  int fill;
+  cdtime_t last_update;
+  value_list_t vl;
+  pthread_mutex_t mutex;
+} buffer_t;
+
+static __thread buffer_t send_buffer = {
+  .vl = VALUE_LIST_INIT,
+  .mutex = PTHREAD_MUTEX_INITIALIZER,
+};
+
+typedef struct buffer_node {
+  buffer_t *buffer;
+  struct buffer_node *next;
+} buffer_node_t;
+static buffer_node_t *buffer_list_head;
+static int buffer_list_length;
+static pthread_mutex_t buffer_list_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Dispatch threads write queue */
 static __thread root_write_queue_t *root_write_queue_head;
 static __thread root_write_queue_t *root_write_queue_tail;
+static __thread long root_write_queue_length;
 static __thread long root_write_queue_sum_length;
 static __thread root_write_queue_t *root_write_queue;
 static __thread char root_write_queue_host[DATA_MAX_NAME_LEN];
@@ -386,6 +408,7 @@ static int network_enqueue_write_queue(write_queue_t *q) {
         }
         root_write_queue_head = NULL;
         root_write_queue_tail = NULL;
+        root_write_queue_length = 0;
         root_write_queue_sum_length = 0;
         return -ENOMEM;
       }
@@ -395,13 +418,14 @@ static int network_enqueue_write_queue(write_queue_t *q) {
         root_write_queue_tail->next = rq;
       }
       root_write_queue_tail = rq;
+      root_write_queue_length++;
     }
     root_write_queue = root_write_queue_head;
-    sstrncpy(root_write_queue_host, q->vl.host, sizeof(root_write_queue_host));
+    sstrncpy(root_write_queue_host, q->vl->host, sizeof(root_write_queue_host));
   }
 
-  if (strcmp(root_write_queue_host, q->vl.host) != 0) {
-    sstrncpy(root_write_queue_host, q->vl.host, sizeof(root_write_queue_host));
+  if (strcmp(root_write_queue_host, q->vl->host) != 0) {
+    sstrncpy(root_write_queue_host, q->vl->host, sizeof(root_write_queue_host));
     root_write_queue = root_write_queue->next;
     if (root_write_queue == NULL)
       root_write_queue = root_write_queue_head;
@@ -2317,13 +2341,17 @@ static void *dispatch_thread(void *stats) /* {{{ */
       sfree(ent);
     }
 
-    plugin_dispatch_value_queue(root_write_queue_head, root_write_queue_tail,
-                                root_write_queue_sum_length);
-    stats_values_dispatched->accepted += root_write_queue_sum_length;
+    if (root_write_queue_sum_length > 0) {
+      plugin_dispatch_value_queue(root_write_queue_head, root_write_queue_tail,
+                                  root_write_queue_length,
+                                  root_write_queue_sum_length);
+      stats_values_dispatched->accepted += root_write_queue_sum_length;
 
-    root_write_queue_head = NULL;
-    root_write_queue_tail = NULL;
-    root_write_queue_sum_length = 0;
+      root_write_queue_head = NULL;
+      root_write_queue_tail = NULL;
+      root_write_queue_length = 0;
+      root_write_queue_sum_length = 0;
+    }
 
   } /* while (42) */
 
@@ -2460,13 +2488,14 @@ static void *receive_thread(void __attribute__((unused)) * arg) {
   return network_receive() ? (void *)1 : (void *)0;
 } /* void *receive_thread */
 
-static void network_init_buffer(void) {
-  memset(send_buffer, 0, network_config_packet_size);
-  send_buffer_ptr = send_buffer;
-  send_buffer_fill = 0;
-  send_buffer_first_write = 0;
+static void network_init_buffer(buffer_t *buffer) {
+  memset(buffer->data, 0, network_config_packet_size);
+  buffer->ptr = buffer->data;
+  buffer->fill = 0;
+  buffer->last_update = 0;
 
-  memset(&send_buffer_vl, 0, sizeof(send_buffer_vl));
+  memset(&buffer->vl, 0, sizeof(buffer->vl));
+
 } /* int network_init_buffer */
 
 static void network_send_buffer_plain(sockent_t *se, /* {{{ */
@@ -2729,16 +2758,25 @@ static int add_to_buffer(char *buffer, size_t buffer_size, /* {{{ */
   return buffer - buffer_orig;
 } /* }}} int add_to_buffer */
 
-static void flush_buffer(void) {
-  DEBUG("network plugin: flush_buffer: send_buffer_fill = %i",
-        send_buffer_fill);
+static void flush_buffer(buffer_t *buffer) {
+  // DEBUG("network plugin: flush_buffer: send_buffer_fill = %i",
+  //       send_buffer_fill);
 
-  network_send_buffer(send_buffer, (size_t)send_buffer_fill);
+  // network_send_buffer(send_buffer, (size_t)send_buffer_fill);
 
-  stats_octets_tx += ((uint64_t)send_buffer_fill);
+  // stats_octets_tx += ((uint64_t)send_buffer_fill);
+  // stats_packets_tx++;
+
+  // network_init_buffer();
+  DEBUG("network plugin: flush_buffer: buffer fill = %i",
+        buffer->fill);
+
+  network_send_buffer(buffer->data, (size_t)buffer->fill);
+
+  stats_octets_tx += ((uint64_t)buffer->fill);
   stats_packets_tx++;
 
-  network_init_buffer();
+  network_init_buffer(buffer);
 }
 
 static int network_write(const data_set_t *ds, const value_list_t *vl,
@@ -2769,44 +2807,107 @@ static int network_write(const data_set_t *ds, const value_list_t *vl,
 
   uc_meta_data_add_unsigned_int(vl, "network:time_sent", (uint64_t)vl->time);
 
-  pthread_mutex_lock(&send_buffer_lock);
+  // pthread_mutex_lock(&send_buffer_lock);
 
-  status = add_to_buffer(send_buffer_ptr,
+  // status = add_to_buffer(send_buffer_ptr,
+  //                        network_config_packet_size -
+  //                            (send_buffer_fill + BUFF_SIG_SIZE),
+  //                        &send_buffer_vl, ds, vl);
+  // if (status >= 0) {
+  //   /* status == bytes added to the buffer */
+  //   send_buffer_fill += status;
+  //   send_buffer_ptr += status;
+  //   send_buffer_last_update = cdtime();
+
+  //   stats_values_sent++;
+  // } else {
+  //   flush_buffer();
+
+  //   status = add_to_buffer(send_buffer_ptr,
+  //                          network_config_packet_size -
+  //                              (send_buffer_fill + BUFF_SIG_SIZE),
+  //                          &send_buffer_vl, ds, vl);
+
+  //   if (status >= 0) {
+  //     send_buffer_fill += status;
+  //     send_buffer_ptr += status;
+
+  //     stats_values_sent++;
+  //   }
+  // }
+
+  // if (status < 0) {
+  //   ERROR("network plugin: Unable to append to the "
+  //         "buffer for some weird reason");
+  // } else if ((network_config_packet_size - send_buffer_fill) < 15) {
+  //   flush_buffer();
+  // }
+
+  // pthread_mutex_unlock(&send_buffer_lock);
+
+  pthread_mutex_lock(&send_buffer.mutex);
+
+  if (send_buffer.data == NULL) {
+    send_buffer.data = malloc(network_config_packet_size);
+    if (send_buffer.data == NULL) {
+      ERROR("network: network_write send_buffer malloc failed.");
+      pthread_mutex_unlock(&send_buffer.mutex);
+      return -1;
+    }
+    network_init_buffer(&send_buffer);
+
+    buffer_node_t *buffer_node = malloc(sizeof(*buffer_node));
+    if (buffer_node == NULL) {
+      ERROR("network: network_write buffer_node malloc failed.");
+      pthread_mutex_unlock(&send_buffer.mutex);
+      return -1;
+    }
+    buffer_node->buffer = &send_buffer;
+
+    pthread_mutex_lock(&buffer_list_mutex);
+    if (buffer_list_head != NULL)
+      buffer_node->next = buffer_list_head;
+    buffer_list_head = buffer_node;
+    buffer_list_length++;
+    DEBUG("network: network_write added buffer number %d", buffer_list_length);
+    pthread_mutex_unlock(&buffer_list_mutex);
+  }
+
+  status = add_to_buffer(send_buffer.ptr,
                          network_config_packet_size -
-                             (send_buffer_fill + BUFF_SIG_SIZE),
-                         &send_buffer_vl, ds, vl);
+                             (send_buffer.fill + BUFF_SIG_SIZE),
+                         &send_buffer.vl, ds, vl);
   if (status >= 0) {
     /* status == bytes added to the buffer */
-    send_buffer_fill += status;
-    send_buffer_ptr += status;
-    if (send_buffer_first_write == 0)
-      send_buffer_first_write = cdtime();
+    send_buffer.fill += status;
+    send_buffer.ptr += status;
+    send_buffer.last_update = cdtime();
 
-    stats_values_sent++;
+    stats_values_sent++; //!!
   } else {
-    flush_buffer();
+    flush_buffer(&send_buffer);
 
-    status = add_to_buffer(send_buffer_ptr,
+    status = add_to_buffer(send_buffer.ptr,
                            network_config_packet_size -
-                               (send_buffer_fill + BUFF_SIG_SIZE),
-                           &send_buffer_vl, ds, vl);
+                               (send_buffer.fill + BUFF_SIG_SIZE),
+                           &send_buffer.vl, ds, vl);
 
     if (status >= 0) {
-      send_buffer_fill += status;
-      send_buffer_ptr += status;
+      send_buffer.fill += status;
+      send_buffer.ptr += status;
 
-      stats_values_sent++;
+      stats_values_sent++; //!!
     }
   }
 
   if (status < 0) {
     ERROR("network plugin: Unable to append to the "
           "buffer for some weird reason");
-  } else if ((network_config_packet_size - send_buffer_fill) < 15) {
-    flush_buffer();
+  } else if ((network_config_packet_size - send_buffer.fill) < 15) {
+    flush_buffer(&send_buffer);
   }
 
-  pthread_mutex_unlock(&send_buffer_lock);
+  pthread_mutex_unlock(&send_buffer.mutex);
 
   return (status < 0) ? -1 : 0;
 } /* int network_write */
@@ -3235,10 +3336,19 @@ static int network_shutdown(void) {
 
   sockent_destroy(listen_sockets);
 
-  if (send_buffer_fill > 0)
-    flush_buffer();
+  // if (send_buffer_fill > 0)
+  //   flush_buffer();
 
-  sfree(send_buffer);
+  // sfree(send_buffer);
+  buffer_node_t *buffer_node;
+  while ((buffer_node = buffer_list_head) != NULL) {
+    if (buffer_node->buffer->fill > 0)
+      flush_buffer(buffer_node->buffer);
+    buffer_list_head = buffer_node->next;
+    sfree(buffer_node->buffer->data);
+    sfree(buffer_node);
+    buffer_list_length--;
+  }
 
   for (sockent_t *se = sending_sockets; se != NULL; se = se->next)
     sockent_client_disconnect(se);
@@ -3341,12 +3451,12 @@ static int network_init(void) {
 
   plugin_register_shutdown_first("network", network_shutdown);
 
-  send_buffer = malloc(network_config_packet_size);
-  if (send_buffer == NULL) {
-    ERROR("network plugin: malloc failed.");
-    return -1;
-  }
-  network_init_buffer();
+  // send_buffer = malloc(network_config_packet_size);
+  // if (send_buffer == NULL) {
+  //   ERROR("network plugin: malloc failed.");
+  //   return -1;
+  // }
+  // network_init_buffer();
 
   /* setup socket(s) and so on */
   if (sending_sockets != NULL) {
@@ -3413,19 +3523,35 @@ static int network_init(void) {
 static int network_flush(cdtime_t timeout,
                          __attribute__((unused)) const char *identifier,
                          __attribute__((unused)) user_data_t *user_data) {
-  pthread_mutex_lock(&send_buffer_lock);
+  // pthread_mutex_lock(&send_buffer_lock);
 
-  if (send_buffer_fill > 0) {
-    if (timeout > 0) {
-      cdtime_t now = cdtime();
-      if ((send_buffer_first_write + timeout) > now) {
-        pthread_mutex_unlock(&send_buffer_lock);
-        return 0;
+  // if (send_buffer_fill > 0) {
+  //   if (timeout > 0) {
+  //     cdtime_t now = cdtime();
+  //     if ((send_buffer_last_update + timeout) > now) {
+  //       pthread_mutex_unlock(&send_buffer_lock);
+  //       return 0;
+  //     }
+  //   }
+  //   flush_buffer();
+  // }
+  // pthread_mutex_unlock(&send_buffer_lock);
+
+  for (buffer_node_t *buffer_node = buffer_list_head;
+       buffer_node != NULL; buffer_node = buffer_node->next) {
+    pthread_mutex_lock(&buffer_node->buffer->mutex);
+    if (buffer_node->buffer->fill > 0 ) {
+      if (timeout > 0) {
+        cdtime_t now = cdtime();
+        if ((buffer_node->buffer->last_update + timeout) > now) {
+          pthread_mutex_unlock(&buffer_node->buffer->mutex);
+          continue;
+        }
       }
+      flush_buffer(buffer_node->buffer);
     }
-    flush_buffer();
+    pthread_mutex_unlock(&buffer_node->buffer->mutex);
   }
-  pthread_mutex_unlock(&send_buffer_lock);
 
   return 0;
 } /* int network_flush */
