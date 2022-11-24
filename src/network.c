@@ -292,12 +292,6 @@ static int dispatch_threads_number = 1;
 static pthread_t *dispatch_threads_id;
 
 /* Buffer in which to-be-sent network packets are constructed. */
-// static char *send_buffer;
-// static char *send_buffer_ptr;
-// static int send_buffer_fill;
-// static cdtime_t send_buffer_last_update;
-// static value_list_t send_buffer_vl = VALUE_LIST_INIT;
-// static pthread_mutex_t send_buffer_lock = PTHREAD_MUTEX_INITIALIZER;
 typedef struct buffer {
   char *data;
   char *ptr;
@@ -338,8 +332,7 @@ static derive_t stats_octets_rx;
 static derive_t stats_octets_tx;
 static derive_t stats_packets_rx;
 static derive_t stats_packets_tx;
-// static __thread derive_t *stats_values_dispatched;
-// static __thread derive_t *stats_values_not_dispatched;
+
 typedef struct stats_dispatched {
   derive_t accepted;
   derive_t rejected;
@@ -347,9 +340,14 @@ typedef struct stats_dispatched {
 static stats_dispatched_t *stats_dispatched;
 static __thread stats_dispatched_t *stats_values_dispatched;
 
-static derive_t stats_values_sent;
-static derive_t stats_values_not_sent;
-static pthread_mutex_t stats_lock = PTHREAD_MUTEX_INITIALIZER;
+typedef struct stats_values {
+  derive_t accepted;
+  derive_t rejected;
+  struct stats_values *next;
+} stats_values_t;
+static __thread stats_values_t *stats_values_sent;
+static stats_values_t *stats_values_head;
+static pthread_mutex_t stats_values_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /*
  * Private functions
@@ -397,8 +395,9 @@ static bool check_send_okay(const value_list_t *vl) /* {{{ */
 
 static int network_enqueue_write_queue(write_queue_t *q) {
   if (root_write_queue_head == NULL) {
-    size_t write_threads_num = plugin_get_write_threads_num();
-    for (size_t i = 0; i < write_threads_num; i++) {
+    size_t num_queues = plugin_get_write_threads_num() / dispatch_threads_number;
+    if (num_queues < 1) num_queues = 1;
+    for (size_t i = 0; i < num_queues; i++) {
       root_write_queue_t *rq = plugin_init_root_write_queue();
       if (rq == NULL) {
         ERROR("network plugin: network_enqueue_write_queue plugin_init_root_write_queue failed");
@@ -2480,19 +2479,12 @@ static void *receive_thread(void __attribute__((unused)) * arg) {
 } /* void *receive_thread */
 
 static void network_init_buffer(buffer_t *buffer) {
-  // memset(send_buffer, 0, network_config_packet_size);
-  // send_buffer_ptr = send_buffer;
-  // send_buffer_fill = 0;
-  // send_buffer_last_update = 0;
-
-  // memset(&send_buffer_vl, 0, sizeof(send_buffer_vl));
   memset(buffer->data, 0, network_config_packet_size);
   buffer->ptr = buffer->data;
   buffer->fill = 0;
   buffer->last_update = 0;
 
   memset(&buffer->vl, 0, sizeof(buffer->vl));
-
 } /* int network_init_buffer */
 
 static void network_send_buffer_plain(sockent_t *se, /* {{{ */
@@ -2756,15 +2748,6 @@ static int add_to_buffer(char *buffer, size_t buffer_size, /* {{{ */
 } /* }}} int add_to_buffer */
 
 static void flush_buffer(buffer_t *buffer) {
-  // DEBUG("network plugin: flush_buffer: send_buffer_fill = %i",
-  //       send_buffer_fill);
-
-  // network_send_buffer(send_buffer, (size_t)send_buffer_fill);
-
-  // stats_octets_tx += ((uint64_t)send_buffer_fill);
-  // stats_packets_tx++;
-
-  // network_init_buffer();
   DEBUG("network plugin: flush_buffer: buffer fill = %i",
         buffer->fill);
 
@@ -2774,6 +2757,29 @@ static void flush_buffer(buffer_t *buffer) {
   stats_packets_tx++;
 
   network_init_buffer(buffer);
+}
+
+static int update_stats_values_sent(int sent) {
+  if (stats_values_sent == NULL) {
+    stats_values_sent = malloc(sizeof(*stats_values_sent));
+    if (stats_values_sent == NULL)
+      return -1;
+    stats_values_sent->accepted = 0;
+    stats_values_sent->rejected = 0;
+    stats_values_sent->next = NULL;
+
+    pthread_mutex_lock(&stats_values_mutex);
+    if (stats_values_head != NULL)
+      stats_values_sent->next = stats_values_head;
+    stats_values_head = stats_values_sent;
+    pthread_mutex_unlock(&stats_values_mutex);
+  }
+  if (sent > 0) {
+    stats_values_sent->accepted += sent;
+  } else {
+    stats_values_sent->rejected -= sent;
+  }
+  return 0;
 }
 
 static int network_write(const data_set_t *ds, const value_list_t *vl,
@@ -2794,53 +2800,11 @@ static int network_write(const data_set_t *ds, const value_list_t *vl,
           "NOT sending %s.",
           name);
 #endif
-    /* Counter is not protected by another lock and may be reached by
-     * multiple threads */
-    pthread_mutex_lock(&stats_lock);
-    stats_values_not_sent++;
-    pthread_mutex_unlock(&stats_lock);
+    update_stats_values_sent(-1);
     return 0;
   }
 
   uc_meta_data_add_unsigned_int(vl, "network:time_sent", (uint64_t)vl->time);
-
-  // pthread_mutex_lock(&send_buffer_lock);
-
-  // status = add_to_buffer(send_buffer_ptr,
-  //                        network_config_packet_size -
-  //                            (send_buffer_fill + BUFF_SIG_SIZE),
-  //                        &send_buffer_vl, ds, vl);
-  // if (status >= 0) {
-  //   /* status == bytes added to the buffer */
-  //   send_buffer_fill += status;
-  //   send_buffer_ptr += status;
-  //   send_buffer_last_update = cdtime();
-
-  //   stats_values_sent++;
-  // } else {
-  //   flush_buffer();
-
-  //   status = add_to_buffer(send_buffer_ptr,
-  //                          network_config_packet_size -
-  //                              (send_buffer_fill + BUFF_SIG_SIZE),
-  //                          &send_buffer_vl, ds, vl);
-
-  //   if (status >= 0) {
-  //     send_buffer_fill += status;
-  //     send_buffer_ptr += status;
-
-  //     stats_values_sent++;
-  //   }
-  // }
-
-  // if (status < 0) {
-  //   ERROR("network plugin: Unable to append to the "
-  //         "buffer for some weird reason");
-  // } else if ((network_config_packet_size - send_buffer_fill) < 15) {
-  //   flush_buffer();
-  // }
-
-  // pthread_mutex_unlock(&send_buffer_lock);
 
   pthread_mutex_lock(&send_buffer.mutex);
 
@@ -2875,13 +2839,19 @@ static int network_write(const data_set_t *ds, const value_list_t *vl,
                          network_config_packet_size -
                              (send_buffer.fill + BUFF_SIG_SIZE),
                          &send_buffer.vl, ds, vl);
-  if (status >= 0) {
-    /* status == bytes added to the buffer */
-    send_buffer.fill += status;
-    send_buffer.ptr += status;
-    send_buffer.last_update = cdtime();
+  #define move_buffer()                                                        \
+  do { /* status == bytes added to the buffer */                               \
+    send_buffer.fill += status;                                                \
+    send_buffer.ptr += status;                                                 \
+    send_buffer.last_update = cdtime();                                        \
+    if (update_stats_values_sent(1) < 0) {                                     \
+      ERROR("network: update_stats_values_sent malloc failed.");               \
+      return -1;                                                               \
+    }                                                                          \
+  } while (0)
 
-    stats_values_sent++; //!!
+  if (status >= 0) {
+    move_buffer();
   } else {
     flush_buffer(&send_buffer);
 
@@ -2890,13 +2860,7 @@ static int network_write(const data_set_t *ds, const value_list_t *vl,
                                (send_buffer.fill + BUFF_SIG_SIZE),
                            &send_buffer.vl, ds, vl);
 
-    if (status >= 0) {
-      send_buffer.fill += status;
-      send_buffer.ptr += status;
-      send_buffer.last_update = cdtime();
-
-      stats_values_sent++; //!!
-    }
+    if (status >= 0) move_buffer();
   }
 
   if (status < 0) {
@@ -3335,10 +3299,6 @@ static int network_shutdown(void) {
 
   sockent_destroy(listen_sockets);
 
-  // if (send_buffer_fill > 0)
-  //   flush_buffer();
-
-  // sfree(send_buffer);
   buffer_node_t *buffer_node;
   while ((buffer_node = buffer_list_head) != NULL) {
     if (buffer_node->buffer->fill > 0)
@@ -3385,8 +3345,14 @@ static int network_stats_read(void) /* {{{ */
     copy_values_dispatched += stats_dispatched[i].accepted;
     copy_values_not_dispatched += stats_dispatched[i].rejected;
   }
-  copy_values_sent = stats_values_sent;
-  copy_values_not_sent = stats_values_not_sent;
+  copy_values_sent = 0;
+  copy_values_not_sent = 0;
+  for (stats_values_t *stats_values = stats_values_head;
+       stats_values != NULL; stats_values = stats_values->next) {
+    copy_values_sent += stats_values->accepted;
+    copy_values_not_sent += stats_values->rejected;
+  }
+
   copy_receive_list_length = receive_list_length;
 
   /* Initialize `vl' */
@@ -3449,13 +3415,6 @@ static int network_init(void) {
     plugin_register_read("network", network_stats_read);
 
   plugin_register_shutdown_first("network", network_shutdown);
-
-  // send_buffer = malloc(network_config_packet_size);
-  // if (send_buffer == NULL) {
-  //   ERROR("network plugin: malloc failed.");
-  //   return -1;
-  // }
-  // network_init_buffer();
 
   /* setup socket(s) and so on */
   if (sending_sockets != NULL) {
@@ -3522,20 +3481,6 @@ static int network_init(void) {
 static int network_flush(cdtime_t timeout,
                          __attribute__((unused)) const char *identifier,
                          __attribute__((unused)) user_data_t *user_data) {
-  // pthread_mutex_lock(&send_buffer_lock);
-
-  // if (send_buffer_fill > 0) {
-  //   if (timeout > 0) {
-  //     cdtime_t now = cdtime();
-  //     if ((send_buffer_last_update + timeout) > now) {
-  //       pthread_mutex_unlock(&send_buffer_lock);
-  //       return 0;
-  //     }
-  //   }
-  //   flush_buffer();
-  // }
-  // pthread_mutex_unlock(&send_buffer_lock);
-
   for (buffer_node_t *buffer_node = buffer_list_head;
        buffer_node != NULL; buffer_node = buffer_node->next) {
     pthread_mutex_lock(&buffer_node->buffer->mutex);
