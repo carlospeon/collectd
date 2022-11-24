@@ -296,7 +296,7 @@ typedef struct buffer {
   char *data;
   char *ptr;
   int fill;
-  cdtime_t last_update;
+  cdtime_t first_write;
   value_list_t vl;
   pthread_mutex_t mutex;
 } buffer_t;
@@ -2491,7 +2491,7 @@ static void network_init_buffer(buffer_t *buffer) {
   memset(buffer->data, 0, network_config_packet_size);
   buffer->ptr = buffer->data;
   buffer->fill = 0;
-  buffer->last_update = 0;
+  buffer->first_write = 0;
 
   memset(&buffer->vl, 0, sizeof(buffer->vl));
 } /* int network_init_buffer */
@@ -2852,7 +2852,7 @@ static int network_write(const data_set_t *ds, const value_list_t *vl,
   do { /* status == bytes added to the buffer */                               \
     send_buffer.fill += status;                                                \
     send_buffer.ptr += status;                                                 \
-    send_buffer.last_update = cdtime();                                        \
+    if (send_buffer.first_write == 0) send_buffer.first_write = cdtime();      \
     if (update_stats_values_sent(1) < 0) {                                     \
       ERROR("network: update_stats_values_sent malloc failed.");               \
       return -1;                                                               \
@@ -3496,7 +3496,7 @@ static int network_flush(cdtime_t timeout,
     if (buffer_node->buffer->fill > 0 ) {
       if (timeout > 0) {
         cdtime_t now = cdtime();
-        if ((buffer_node->buffer->last_update + timeout) > now) {
+        if ((buffer_node->buffer->first_write + timeout) > now) {
           pthread_mutex_unlock(&buffer_node->buffer->mutex);
           continue;
         }
