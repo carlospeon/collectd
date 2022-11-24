@@ -185,7 +185,8 @@ static const char *plugin_get_dir(void) {
 
 static int plugin_update_internal_statistics(void) { /* {{{ */
   gauge_t copy_root_write_queue_length = (gauge_t)root_write_queue_length;
-  gauge_t copy_root_write_queue_sum_length = (gauge_t)root_write_queue_sum_length;
+  gauge_t copy_root_write_queue_sum_length =
+      (gauge_t)root_write_queue_sum_length;
 
   /* Initialize `vl' */
   value_list_t vl = VALUE_LIST_INIT;
@@ -335,7 +336,7 @@ static int register_callback(llist_t **list, bool prepend, /* {{{ */
 
     if (prepend)
       llist_prepend(*list, le);
-    else 
+    else
       llist_append(*list, le);
   } else {
     callback_func_t *old_cf = le->value;
@@ -475,16 +476,14 @@ static int plugin_load_file(char const *file, bool global) {
   return 0;
 }
 
-static cdtime_t plugin_normalize_time (cdtime_t cdtime, cdtime_t cdinterval)
-{
+static cdtime_t plugin_normalize_time(cdtime_t cdtime, cdtime_t cdinterval) {
   struct timeval tv;
   time_t interval = CDTIME_T_TO_TIME_T(cdinterval);
   time_t mod;
 
   tv = CDTIME_T_TO_TIMEVAL(cdtime);
 
-  if (tv.tv_usec > 0) 
-  {
+  if (tv.tv_usec > 0) {
     tv.tv_usec = 0;
     tv.tv_sec++;
   }
@@ -492,7 +491,7 @@ static cdtime_t plugin_normalize_time (cdtime_t cdtime, cdtime_t cdinterval)
   mod = tv.tv_sec % interval;
   if (mod == 0)
     return cdtime;
-      
+
   tv.tv_sec = tv.tv_sec + (interval - mod);
 
   return TIMEVAL_TO_CDTIME_T(&tv);
@@ -531,9 +530,9 @@ static void *plugin_read_thread(void __attribute__((unused)) * args) {
 
       rf->rf_next_read = cdtime();
       if (normalize_time)
-        rf->rf_next_read = plugin_normalize_time(cdtime (), rf->rf_interval);
+        rf->rf_next_read = plugin_normalize_time(cdtime(), rf->rf_interval);
       else
-        rf->rf_next_read = cdtime ();
+        rf->rf_next_read = cdtime();
     }
 
     /* sleep until this entry is due,
@@ -644,7 +643,8 @@ static void *plugin_read_thread(void __attribute__((unused)) * args) {
        * so this value doesn't trail off into the
        * past too much. */
       if (normalize_time)
-        rf->rf_next_read = plugin_normalize_time(now, rf->rf_effective_interval);
+        rf->rf_next_read =
+            plugin_normalize_time(now, rf->rf_effective_interval);
       else
         rf->rf_next_read = now;
     }
@@ -792,7 +792,7 @@ plugin_value_list_clone(value_list_t const *vl_orig) /* {{{ */
   return vl;
 } /* }}} value_list_t *plugin_value_list_clone */
 
-EXPORT root_write_queue_t* plugin_init_root_write_queue(void) {
+EXPORT root_write_queue_t *plugin_init_root_write_queue(void) {
   root_write_queue_t *l = malloc(sizeof(*l));
   if (l != NULL) {
     l->head = NULL;
@@ -1335,7 +1335,8 @@ EXPORT int plugin_register_complex_config(const char *type,
 } /* int plugin_register_complex_config */
 
 EXPORT int plugin_register_init(const char *name, int (*callback)(void)) {
-  return create_register_callback(&list_init, false, name, (void *)callback, NULL);
+  return create_register_callback(&list_init, false, name, (void *)callback,
+                                  NULL);
 } /* plugin_register_init */
 
 static int plugin_compare_read_func(const void *arg0, const void *arg1) {
@@ -1361,9 +1362,9 @@ static int plugin_insert_read(read_func_t *rf) {
   llentry_t *le;
 
   if (normalize_time)
-    rf->rf_next_read = plugin_normalize_time(cdtime (), rf->rf_interval);
-  else 
-    rf->rf_next_read = cdtime ();
+    rf->rf_next_read = plugin_normalize_time(cdtime(), rf->rf_interval);
+  else
+    rf->rf_next_read = cdtime();
 
   rf->rf_effective_interval = rf->rf_interval;
 
@@ -1495,7 +1496,8 @@ EXPORT int plugin_register_complex_read(const char *group, const char *name,
 
 EXPORT int plugin_register_write(const char *name, plugin_write_cb callback,
                                  user_data_t const *ud) {
-  return create_register_callback(&list_write, false, name, (void *)callback, ud);
+  return create_register_callback(&list_write, false, name, (void *)callback,
+                                  ud);
 } /* int plugin_register_write */
 
 static int plugin_flush_timeout_callback(user_data_t *ud) {
@@ -1540,7 +1542,8 @@ EXPORT int plugin_register_flush(const char *name, plugin_flush_cb callback,
   int status;
   plugin_ctx_t ctx = plugin_get_ctx();
 
-  status = create_register_callback(&list_flush, false, name, (void *)callback, ud);
+  status =
+      create_register_callback(&list_flush, false, name, (void *)callback, ud);
   if (status != 0)
     return status;
 
@@ -1588,7 +1591,8 @@ EXPORT int plugin_register_flush(const char *name, plugin_flush_cb callback,
 
 EXPORT int plugin_register_missing(const char *name, plugin_missing_cb callback,
                                    user_data_t const *ud) {
-  return create_register_callback(&list_missing, false, name, (void *)callback, ud);
+  return create_register_callback(&list_missing, false, name, (void *)callback,
+                                  ud);
 } /* int plugin_register_missing */
 
 EXPORT int plugin_register_cache_event(const char *name,
@@ -1647,11 +1651,14 @@ EXPORT int plugin_register_cache_event(const char *name,
 } /* int plugin_register_cache_event */
 
 EXPORT int plugin_register_shutdown(const char *name, int (*callback)(void)) {
-  return create_register_callback(&list_shutdown, false, name, (void *)callback, NULL);
+  return create_register_callback(&list_shutdown, false, name, (void *)callback,
+                                  NULL);
 } /* int plugin_register_shutdown */
 
-EXPORT int plugin_register_shutdown_first (const char *name, int (*callback) (void)) {
-  return (create_register_callback (&list_shutdown, true, name, (void *) callback, NULL));
+EXPORT int plugin_register_shutdown_first(const char *name,
+                                          int (*callback)(void)) {
+  return (create_register_callback(&list_shutdown, true, name, (void *)callback,
+                                   NULL));
 } /* int plugin_register_shutdown_first */
 
 static void plugin_free_data_sets(void) {
@@ -1710,8 +1717,8 @@ EXPORT int plugin_register_log(const char *name, plugin_log_cb callback,
 EXPORT int plugin_register_notification(const char *name,
                                         plugin_notification_cb callback,
                                         user_data_t const *ud) {
-  return create_register_callback(&list_notification, false, name, (void *)callback,
-                                  ud);
+  return create_register_callback(&list_notification, false, name,
+                                  (void *)callback, ud);
 } /* int plugin_register_log */
 
 EXPORT int plugin_unregister_config(const char *name) {
@@ -1924,7 +1931,7 @@ EXPORT int plugin_init_all(void) {
   chain_name = global_option_get("PostCacheChain");
   post_cache_chain = fc_chain_get_by_name(chain_name);
 
-  normalize_time = IS_TRUE (global_option_get ("NormalizeTime"));
+  normalize_time = IS_TRUE(global_option_get("NormalizeTime"));
 
   write_limit_high = global_option_get_long("WriteQueueLimitHigh",
                                             /* default = */ 0);
@@ -2558,8 +2565,7 @@ EXPORT int plugin_dispatch_values(value_list_t const *vl) {
 }
 
 EXPORT int plugin_dispatch_value_queue(root_write_queue_t *head,
-                                       root_write_queue_t *tail,
-                                       long length,
+                                       root_write_queue_t *tail, long length,
                                        long sum_length) {
   if (head == NULL || tail == NULL || length == 0 || sum_length == 0)
     return 0;
@@ -2575,7 +2581,8 @@ EXPORT int plugin_dispatch_value_queue(root_write_queue_t *head,
 
   int status = plugin_write_enqueue_queue(head, tail, length, sum_length);
   if (status != 0) {
-    ERROR("plugin_dispatch_values: plugin_write_enqueue_queue failed with status %i "
+    ERROR("plugin_dispatch_values: plugin_write_enqueue_queue failed with "
+          "status %i "
           "(%s).",
           status, STRERROR(status));
     return status;
@@ -3078,6 +3085,4 @@ int plugin_thread_create(pthread_t *thread, void *(*start_routine)(void *),
   return 0;
 } /* int plugin_thread_create */
 
-EXPORT size_t plugin_get_write_threads_num(void) {
-  return write_threads_num;
-}
+EXPORT size_t plugin_get_write_threads_num(void) { return write_threads_num; }
