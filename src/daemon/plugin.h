@@ -326,8 +326,8 @@ int plugin_register_cache_event(const char *name,
                                 plugin_cache_event_cb callback,
                                 user_data_t const *ud);
 int plugin_register_shutdown(const char *name, plugin_shutdown_cb callback);
-int plugin_register_shutdown_first (const char *name,
-                                    plugin_shutdown_cb callback);
+int plugin_register_shutdown_first(const char *name,
+                                   plugin_shutdown_cb callback);
 int plugin_register_data_set(const data_set_t *ds);
 int plugin_register_log(const char *name, plugin_log_cb callback,
                         user_data_t const *user_data);
@@ -377,10 +377,9 @@ void plugin_log_available_writers(void);
  */
 int plugin_dispatch_values(value_list_t const *vl);
 
-root_write_queue_t* plugin_init_root_write_queue(void);
+root_write_queue_t *plugin_init_root_write_queue(void);
 int plugin_dispatch_value_queue(root_write_queue_t *root_head,
-                                root_write_queue_t *root_tail,
-                                long length,
+                                root_write_queue_t *root_tail, long length,
                                 long sum_length);
 
 /*

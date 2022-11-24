@@ -302,8 +302,8 @@ typedef struct buffer {
 } buffer_t;
 
 static __thread buffer_t send_buffer = {
-  .vl = VALUE_LIST_INIT,
-  .mutex = PTHREAD_MUTEX_INITIALIZER,
+    .vl = VALUE_LIST_INIT,
+    .mutex = PTHREAD_MUTEX_INITIALIZER,
 };
 
 typedef struct buffer_node {
@@ -395,12 +395,15 @@ static bool check_send_okay(const value_list_t *vl) /* {{{ */
 
 static int network_enqueue_write_queue(write_queue_t *q) {
   if (root_write_queue_head == NULL) {
-    size_t num_queues = plugin_get_write_threads_num() / dispatch_threads_number;
-    if (num_queues < 1) num_queues = 1;
+    size_t num_queues =
+        plugin_get_write_threads_num() / dispatch_threads_number;
+    if (num_queues < 1)
+      num_queues = 1;
     for (size_t i = 0; i < num_queues; i++) {
       root_write_queue_t *rq = plugin_init_root_write_queue();
       if (rq == NULL) {
-        ERROR("network plugin: network_enqueue_write_queue plugin_init_root_write_queue failed");
+        ERROR("network plugin: network_enqueue_write_queue "
+              "plugin_init_root_write_queue failed");
         while ((rq = root_write_queue_head) != NULL) {
           root_write_queue_head = root_write_queue_head->next;
           sfree(rq);
@@ -443,8 +446,8 @@ static int network_enqueue_write_queue(write_queue_t *q) {
 }
 
 static int network_enqueue_values(value_list_t *vl, /* {{{ */
-                                   const char *username,
-                                   struct sockaddr_storage *address) {
+                                  const char *username,
+                                  struct sockaddr_storage *address) {
   int status;
 
   if ((vl->time == 0) || (strlen(vl->host) == 0) || (strlen(vl->plugin) == 0) ||
@@ -2287,7 +2290,7 @@ static int sockent_add(sockent_t *se) /* {{{ */
 static void *dispatch_thread(void *stats) /* {{{ */
 {
 
-  stats_values_dispatched = (stats_dispatched_t*) stats;
+  stats_values_dispatched = (stats_dispatched_t *)stats;
 
   while (42) {
     receive_list_entry_t *ent_head;
@@ -2333,7 +2336,7 @@ static void *dispatch_thread(void *stats) /* {{{ */
               ent->fd);
       } else {
         parse_packet(se, ent->data, ent->data_len, /* flags = */ 0,
-                    /* username = */ NULL, &ent->sender);
+                     /* username = */ NULL, &ent->sender);
       }
       ent_head = ent->next;
       sfree(ent->data);
@@ -2757,8 +2760,7 @@ static int add_to_buffer(char *buffer, size_t buffer_size, /* {{{ */
 } /* }}} int add_to_buffer */
 
 static void flush_buffer(buffer_t *buffer) {
-  DEBUG("network plugin: flush_buffer: buffer fill = %i",
-        buffer->fill);
+  DEBUG("network plugin: flush_buffer: buffer fill = %i", buffer->fill);
 
   network_send_buffer(buffer->data, (size_t)buffer->fill);
 
@@ -2848,11 +2850,12 @@ static int network_write(const data_set_t *ds, const value_list_t *vl,
                          network_config_packet_size -
                              (send_buffer.fill + BUFF_SIG_SIZE),
                          &send_buffer.vl, ds, vl);
-  #define move_buffer()                                                        \
+#define move_buffer()                                                          \
   do { /* status == bytes added to the buffer */                               \
     send_buffer.fill += status;                                                \
     send_buffer.ptr += status;                                                 \
-    if (send_buffer.first_write == 0) send_buffer.first_write = cdtime();      \
+    if (send_buffer.first_write == 0)                                          \
+      send_buffer.first_write = cdtime();                                      \
     if (update_stats_values_sent(1) < 0) {                                     \
       ERROR("network: update_stats_values_sent malloc failed.");               \
       return -1;                                                               \
@@ -2869,7 +2872,8 @@ static int network_write(const data_set_t *ds, const value_list_t *vl,
                                (send_buffer.fill + BUFF_SIG_SIZE),
                            &send_buffer.vl, ds, vl);
 
-    if (status >= 0) move_buffer();
+    if (status >= 0)
+      move_buffer();
   }
 
   if (status < 0) {
@@ -3164,18 +3168,18 @@ static int network_config_add_server(const oconfig_item_t *ci) /* {{{ */
   return 0;
 } /* }}} int network_config_add_server */
 
-static int network_config_set_dispatch_threads (const oconfig_item_t *ci) /* {{{ */
+static int
+network_config_set_dispatch_threads(const oconfig_item_t *ci) /* {{{ */
 {
   double tmp;
-  if ((ci->values_num != 1)
-      || (ci->values[0].type != OCONFIG_TYPE_NUMBER))
-  {
-    WARNING ("network plugin: The `dispatch_threads' config option needs exactly "
+  if ((ci->values_num != 1) || (ci->values[0].type != OCONFIG_TYPE_NUMBER)) {
+    WARNING(
+        "network plugin: The `dispatch_threads' config option needs exactly "
         "one numeric argument.");
     return (-1);
   }
 
-  tmp = (int) ci->values[0].value.number;
+  tmp = (int)ci->values[0].value.number;
   if (tmp > 0)
     dispatch_threads_number = tmp;
 
@@ -3206,8 +3210,8 @@ static int network_config(oconfig_item_t *ci) /* {{{ */
       cf_util_get_boolean(child, &network_config_forward);
     else if (strcasecmp("ReportStats", child->key) == 0)
       cf_util_get_boolean(child, &network_config_stats);
-    else if (strcasecmp ("DispatchThreads", child->key) == 0)
-      network_config_set_dispatch_threads (child);
+    else if (strcasecmp("DispatchThreads", child->key) == 0)
+      network_config_set_dispatch_threads(child);
     else {
       WARNING("network plugin: Option `%s' is not allowed here.", child->key);
     }
@@ -3299,8 +3303,8 @@ static int network_shutdown(void) {
     pthread_mutex_lock(&receive_list_lock);
     pthread_cond_broadcast(&receive_list_cond);
     pthread_mutex_unlock(&receive_list_lock);
-    for (int i = 0 ; i < dispatch_threads_number; i++)
-      pthread_join (dispatch_threads_id[i], /* ret = */ NULL);
+    for (int i = 0; i < dispatch_threads_number; i++)
+      pthread_join(dispatch_threads_id[i], /* ret = */ NULL);
     dispatch_threads_running = 0;
   }
 
@@ -3356,8 +3360,8 @@ static int network_stats_read(void) /* {{{ */
   }
   copy_values_sent = 0;
   copy_values_not_sent = 0;
-  for (stats_values_t *stats_values = stats_values_head;
-       stats_values != NULL; stats_values = stats_values->next) {
+  for (stats_values_t *stats_values = stats_values_head; stats_values != NULL;
+       stats_values = stats_values->next) {
     copy_values_sent += stats_values->accepted;
     copy_values_not_sent += stats_values->rejected;
   }
@@ -3441,27 +3445,27 @@ static int network_init(void) {
   if (dispatch_threads_id == NULL) {
     dispatch_threads_id = calloc(sizeof(pthread_t), dispatch_threads_number);
     if (dispatch_threads_id == NULL) {
-      ERROR ("network plugin: dispatch_threads_id: calloc failed.");
+      ERROR("network plugin: dispatch_threads_id: calloc failed.");
       return -1;
     }
   }
 
   if (dispatch_threads_running == 0) {
 
-    stats_dispatched = calloc(dispatch_threads_number, sizeof(*stats_dispatched));
+    stats_dispatched =
+        calloc(dispatch_threads_number, sizeof(*stats_dispatched));
     if (stats_dispatched == NULL) {
-      ERROR ("network plugin: stats_dispatched: calloc failed.");
+      ERROR("network plugin: stats_dispatched: calloc failed.");
       return -1;
     }
-    for (int i = 0 ; i < dispatch_threads_number; i++)  {
-      int status = plugin_thread_create(&dispatch_threads_id[i],
-                                    dispatch_thread, (void*) &stats_dispatched[i],
-                                    "network disp");
+    for (int i = 0; i < dispatch_threads_number; i++) {
+      int status =
+          plugin_thread_create(&dispatch_threads_id[i], dispatch_thread,
+                               (void *)&stats_dispatched[i], "network disp");
       if (status != 0) {
         char errbuf[1024];
-        ERROR ("network: pthread_create failed: %s",
-               sstrerror (errno, errbuf,
-               sizeof (errbuf)));
+        ERROR("network: pthread_create failed: %s",
+              sstrerror(errno, errbuf, sizeof(errbuf)));
       } else {
         dispatch_threads_running++;
       }
@@ -3490,10 +3494,10 @@ static int network_init(void) {
 static int network_flush(cdtime_t timeout,
                          __attribute__((unused)) const char *identifier,
                          __attribute__((unused)) user_data_t *user_data) {
-  for (buffer_node_t *buffer_node = buffer_list_head;
-       buffer_node != NULL; buffer_node = buffer_node->next) {
+  for (buffer_node_t *buffer_node = buffer_list_head; buffer_node != NULL;
+       buffer_node = buffer_node->next) {
     pthread_mutex_lock(&buffer_node->buffer->mutex);
-    if (buffer_node->buffer->fill > 0 ) {
+    if (buffer_node->buffer->fill > 0) {
       if (timeout > 0) {
         cdtime_t now = cdtime();
         if ((buffer_node->buffer->first_write + timeout) > now) {

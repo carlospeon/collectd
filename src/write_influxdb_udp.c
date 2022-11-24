@@ -97,10 +97,8 @@ typedef struct buffer {
   pthread_mutex_t mutex;
 } buffer_t;
 
-static __thread buffer_t send_buffer = {
-  .mutex = PTHREAD_MUTEX_INITIALIZER
-};
- 
+static __thread buffer_t send_buffer = {.mutex = PTHREAD_MUTEX_INITIALIZER};
+
 typedef struct buffer_node {
   buffer_t *buffer;
   struct buffer_node *next;
@@ -371,7 +369,8 @@ write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
   if (send_buffer.data == NULL) {
     send_buffer.data = malloc(wifxudp_config_packet_size);
     if (send_buffer.data == NULL) {
-      ERROR("write_influxdb_udp: write_influxdb_udp_write send_buffer malloc failed.");
+      ERROR("write_influxdb_udp: write_influxdb_udp_write send_buffer malloc "
+            "failed.");
       pthread_mutex_unlock(&send_buffer.mutex);
       return -1;
     }
@@ -379,7 +378,8 @@ write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
 
     buffer_node_t *buffer_node = malloc(sizeof(*buffer_node));
     if (buffer_node == NULL) {
-      ERROR("write_influxdb_udp: write_influxdb_udp_write buffer_node malloc failed.");
+      ERROR("write_influxdb_udp: write_influxdb_udp_write buffer_node malloc "
+            "failed.");
       sfree(send_buffer.data);
       pthread_mutex_unlock(&send_buffer.mutex);
       return -1;
@@ -391,23 +391,26 @@ write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
       buffer_node->next = buffer_list_head;
     buffer_list_head = buffer_node;
     buffer_list_length++;
-    DEBUG("write_influxdb_udp: write_influxdb_udp_write added buffer number %d", buffer_list_length);
+    DEBUG("write_influxdb_udp: write_influxdb_udp_write added buffer number %d",
+          buffer_list_length);
     pthread_mutex_unlock(&buffer_list_mutex);
   }
 
-  
-  int status = format_influxdb_value_list(send_buffer.ptr, wifxudp_config_packet_size - send_buffer.fill,
-                                          ds, vl, wifxudp_config_time_precision,
-                                          wifxudp_config_store_rates, wifxudp_config_write_meta);
+  int status = format_influxdb_value_list(
+      send_buffer.ptr, wifxudp_config_packet_size - send_buffer.fill, ds, vl,
+      wifxudp_config_time_precision, wifxudp_config_store_rates,
+      wifxudp_config_write_meta);
 
   if (status < 0) {
     flush_buffer(&send_buffer);
-    status = format_influxdb_value_list(send_buffer.ptr, wifxudp_config_packet_size - send_buffer.fill,
-                                        ds, vl, wifxudp_config_time_precision,
-                                        wifxudp_config_store_rates, wifxudp_config_write_meta);
+    status = format_influxdb_value_list(
+        send_buffer.ptr, wifxudp_config_packet_size - send_buffer.fill, ds, vl,
+        wifxudp_config_time_precision, wifxudp_config_store_rates,
+        wifxudp_config_write_meta);
   }
   if (status < 0) {
-    ERROR("write_influxdb_udp plugin: write_influxdb_udp_write write_influxdb_point failed.");
+    ERROR("write_influxdb_udp plugin: write_influxdb_udp_write "
+          "write_influxdb_point failed.");
     pthread_mutex_unlock(&send_buffer.mutex);
     return -1;
   }
@@ -576,9 +579,11 @@ static int write_influxdb_udp_shutdown(void) {
     sfree(buffer_node->buffer->data);
     sfree(buffer_node);
     buffer_list_length--;
-    DEBUG("write_influxdb_udp: write_influxdb_udp_shutdown removed buffer number %d", buffer_list_length);
+    DEBUG("write_influxdb_udp: write_influxdb_udp_shutdown removed buffer "
+          "number %d",
+          buffer_list_length);
   }
-  //pthread_mutex_unlock(&buffer_list_mutex);
+  // pthread_mutex_unlock(&buffer_list_mutex);
 
   for (sockent_t *se = sending_sockets; se != NULL; se = se->next)
     sockent_client_disconnect(se);
@@ -617,10 +622,10 @@ static int write_influxdb_udp_flush(cdtime_t timeout,
                                     const char *identifier,
                                     __attribute__((unused))
                                     user_data_t *user_data) {
-  for (buffer_node_t *buffer_node = buffer_list_head; 
-       buffer_node != NULL; buffer_node = buffer_node->next) {
+  for (buffer_node_t *buffer_node = buffer_list_head; buffer_node != NULL;
+       buffer_node = buffer_node->next) {
     pthread_mutex_lock(&buffer_node->buffer->mutex);
-    if (buffer_node->buffer->fill > 0 ) {
+    if (buffer_node->buffer->fill > 0) {
       if (timeout > 0) {
         cdtime_t now = cdtime();
         if ((buffer_node->buffer->last_update + timeout) > now) {
