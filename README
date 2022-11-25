@@ -1,3 +1,9 @@
+Collectd fork focused on performance:
+
+* Avoid mutex where possible moving shared queues to thread local storage.
+* Reduce mutex locks processing batchs instead of single elements.
+* Add multiple dispatchs threads in the network plugin.
+
  collectd - System information collection daemon
 =================================================
 https://collectd.org/
