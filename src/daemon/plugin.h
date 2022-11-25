@@ -377,7 +377,33 @@ void plugin_log_available_writers(void);
  */
 int plugin_dispatch_values(value_list_t const *vl);
 
+/*
+ * NAME
+ *  plugin_init_root_write_queue
+ *
+ * DESCRIPTION
+ *  This function allocates and initizlize a write queue element (which is
+ * a sub queue or batch of values that will be dequeued toguether).
+ *
+ * ARGUMENTS
+ *  none
+ */
 root_write_queue_t *plugin_init_root_write_queue(void);
+
+/*
+ * NAME
+ *  plugin_dispatch_value_queue
+ *
+ * DESCRIPTION
+ *  This function is called by reading processes with the values they've
+ *  aquired.
+ *
+ * ARGUMENTS
+ *  `root_head' head of the queue with subqueues to dispatch.
+ *  `root_tail' tail of the queue with subqueues to dispatch.
+ *  `length' length of the queue with subqueues to dispatch.
+ *  `sum_length' sum of lengths of all subqueues to dispatch.
+ */
 int plugin_dispatch_value_queue(root_write_queue_t *root_head,
                                 root_write_queue_t *root_tail, long length,
                                 long sum_length);
