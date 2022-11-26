@@ -1,40 +1,3 @@
-#
-# q: What is this ?
-# a: A specfile for building RPM packages of current collectd releases, for
-#    RHEL/CentOS versions 5, 6 and 7. By default all the plugins which are
-#    buildable based on the libraries available in the distribution + the
-#    EPEL repository, will be built. Plugins depending on external libs will
-#    be packaged in separate RPMs.
-#
-# q: And how can I do that ?
-# a: By following these instructions, using mock:
-#
-# - install and configure mock (https://fedoraproject.org/wiki/Projects/Mock)
-#
-# - enable the EPEL repository (http://dl.fedoraproject.org/pub/epel/) in the
-#   configuration files for your target systems (/etc/mock/*.cfg).
-#
-# - fetch the desired collectd release file from https://collectd.org/files/
-#   and save it in your ~/rpmbuild/SOURCES/ directory (or build your own out of
-#   the git repository: ./build.sh && ./configure && make dist)
-#
-# - copy this file in your ~/rpmbuild/SPECS/ directory. Make sure the
-#   "Version:" tag matches the version from the tarball.
-#
-# - build the SRPM first:
-#   mock -r centos-6-x86_64 --buildsrpm --spec ~/rpmbuild/SPECS/collectd.spec \
-#     --sources ~/rpmbuild/SOURCES/
-#
-# - then build the RPMs:
-#   mock -r centos-6-x86_64 --no-clean --rebuild \
-#     /var/lib/mock/centos-6-x86_64/result/collectd-X.Y.Z-NN.src.rpm
-#
-# - you can also optionally enable/disable plugins which are disabled/enabled
-#   by default:
-#   mock -r centos-6-x86_64 --no-clean --without=java --with=oracle --rebuild \
-#     /var/lib/mock/centos-6-x86_64/result/collectd-X.Y.Z-NN.src.rpm
-#
-
 %global _default_patch_fuzz 2
 
 %global _hardened_build 1
@@ -43,16 +6,20 @@
 # disable collectd debug by default
 %bcond_with debug
 
-# plugins enabled by default
+# plugins
 %define with_aggregation 0%{!?_without_aggregation:1}
 %define with_amqp 0%{!?_without_amqp:1}
 %define with_amqp1 0%{!?_without_amqp1:1}
 %define with_apache 0%{!?_without_apache:1}
 %define with_apcups 0%{!?_without_apcups:1}
+%define with_apple_sensors 0%{!?_without_apple_sensors:0}
+%define with_aquaero 0%{!?_without_aquaero:0}
 %define with_ascent 0%{!?_without_ascent:1}
+%define with_barometer 0%{!?_without_barometer:0}
 %define with_battery 0%{!?_without_battery:1}
 %define with_bind 0%{!?_without_bind:1}
 %define with_buddyinfo 0%{!?_without_buddyinfo:1}
+%define with_capabilities 0%{!?_without_capabilities:1}
 %define with_ceph 0%{!?_without_ceph:1}
 %define with_cgroups 0%{!?_without_cgroups:1}
 %define with_check_uptime 0%{!?_without_check_uptime:1}
@@ -68,9 +35,15 @@
 %define with_curl_json 0%{!?_without_curl_json:1}
 %define with_curl_xml 0%{!?_without_curl_xml:1}
 %define with_dbi 0%{!?_without_dbi:1}
+%define with_dcpmm 0%{!?_without_dcpmm:0}
 %define with_df 0%{!?_without_df:1}
 %define with_disk 0%{!?_without_disk:1}
+%define with_diskadapter 0%{!?_without_diskadapter:0}
+%define with_diskpath 0%{!?_without_diskpath:0}
 %define with_dns 0%{!?_without_dns:1}
+%define with_dpdk_telemetry 0%{!?_without_dpdk_telemetry:1}
+%define with_dpdkevents 0%{!?_without_dpdkevents:0}
+%define with_dpdkstat 0%{!?_without_dpdkstat:0}
 %define with_drbd 0%{!?_without_drbd:1}
 %define with_email 0%{!?_without_email:1}
 %define with_entropy 0%{!?_without_entropy:1}
@@ -79,13 +52,20 @@
 %define with_fhcount 0%{!?_without_fhcount:1}
 %define with_filecount 0%{!?_without_filecount:1}
 %define with_fscache 0%{!?_without_fscache:1}
+%define with_gmond 0%{!?_without_gmond:0}
 %define with_gps 0%{!?_without_gps:1}
+%define with_gpu_nvidia 0%{!?_without_gpu_nvidia:0}
+%define with_grpc 0%{!?_without_grpc:0}
+%define with_hba 0%{!?_without_hba:0}
 %define with_hddtemp 0%{!?_without_hddtemp:1}
 %define with_hugepages 0%{!?_without_hugepages:1}
 %define with_infiniband 0%{!?_without_infiniband:1}
+%define with_intel_pmu 0%{!?_without_intel_pmu:0}
+%define with_intel_rdt 0%{!?_without_intel_rdt:0}
 %define with_interface 0%{!?_without_interface:1}
 %define with_ipc 0%{!?_without_ipc:1}
 %define with_ipmi 0%{!?_without_ipmi:1}
+%define with_ipstats 0%{!?_without_ipstats:0}
 %define with_iptables 0%{!?_without_iptables:1}
 %define with_ipvs 0%{!?_without_ipvs:1}
 %define with_irq 0%{!?_without_irq:1}
@@ -94,7 +74,9 @@
 %define with_log_logstash 0%{!?_without_log_logstash:1}
 %define with_logfile 0%{!?_without_logfile:1}
 %define with_logparser 0%{!?_without_logparser:1}
+%define with_lpar 0%{!?_without_lpar:0}
 %define with_lua 0%{!?_without_lua:1}
+%define with_lvm 0%{!?_without_lvm:0}
 %define with_madwifi 0%{!?_without_madwifi:1}
 %define with_mbmon 0%{!?_without_mbmon:1}
 %define with_mcelog 0%{!?_without_mcelog:1}
@@ -103,6 +85,7 @@
 %define with_memcachec 0%{!?_without_memcachec:1}
 %define with_memcached 0%{!?_without_memcached:1}
 %define with_memory 0%{!?_without_memory:1}
+%define with_mic 0%{!?_without_mic:0}
 %define with_mmc 0%{!?_without_mmc:1}
 %define with_modbus 0%{!?_without_modbus:1}
 %define with_mongodb 0%{!?_without_mongodb:1}
@@ -110,7 +93,8 @@
 %define with_multimeter 0%{!?_without_multimeter:1}
 %define with_mysql 0%{!?_without_mysql:1}
 %define with_netlink 0%{!?_without_netlink:1}
-%define with_netstat_udp 0%{!?_without_netstat_udp:1}
+%define with_netapp 0%{!?_without_netapp:0}
+%define with_netstat_udp 0%{!?_without_netstat_udp:0}
 %define with_network 0%{!?_without_network:1}
 %define with_nfs 0%{!?_without_nfs:1}
 %define with_nginx 0%{!?_without_nginx:1}
@@ -124,6 +108,7 @@
 %define with_nut 0%{!?_without_nut:1}
 %define with_odbc 0%{!?_without_odbc:1}
 %define with_olsrd 0%{!?_without_olsrd:1}
+%define with_onewire 0%{!?_without_onewire:0}
 %define with_openldap 0%{!?_without_openldap:1}
 %define with_openvpn 0%{!?_without_openvpn:1}
 %define with_oracle 0%{!?_without_oracle:0}
@@ -131,6 +116,7 @@
 %define with_ovs_stats 0%{!?_without_ovs_stats:1}
 %define with_pcie_errors 0%{!?_without_pcie_errors:1}
 %define with_perl 0%{!?_without_perl:1}
+%define with_pf 0%{!?_without_pf:0}
 %define with_pinba 0%{!?_without_pinba:1}
 %define with_ping 0%{!?_without_ping:1}
 %define with_postgresql 0%{!?_without_postgresql:1}
@@ -139,25 +125,34 @@
 %define with_procevent 0%{!?_without_procevent:1}
 %define with_protocols 0%{!?_without_protocols:1}
 %define with_python 0%{!?_without_python:1}
+%define with_ras 0%{!?_without_ras:0}
 %define with_redis 0%{!?_without_redis:1}
+%define with_redfish 0%{!?_without_redfish:0}
+%define with_routeros 0%{!?_without_routeros:0}
 %define with_rrdcached 0%{!?_without_rrdcached:1}
 %define with_rrdtool 0%{!?_without_rrdtool:1}
 %define with_sensors 0%{!?_without_sensors:1}
 %define with_serial 0%{!?_without_serial:1}
+%define with_sigrok 0%{!?_without_sigrok:0}
+%define with_slurm 0%{!?_without_slurm:0}
 %define with_smart 0%{!?_without_smart:1}
 %define with_snmp 0%{!?_without_snmp:1}
+%define with_snmp_agent 0%{!?_without_snmp_agent:1}
 %define with_statsd 0%{!?_without_statsd:1}
 %define with_swap 0%{!?_without_swap:1}
+%define with_synproxy 0%{!?_without_synproxy:1}
 %define with_sysevent 0%{!?_without_sysevent:1}
 %define with_syslog 0%{!?_without_syslog:1}
 %define with_table 0%{!?_without_table:1}
 %define with_tail 0%{!?_without_tail:1}
 %define with_tail_csv 0%{!?_without_tail_csv:1}
+%define with_tape 0%{!?_without_tape:0}
 %define with_tcpconns 0%{!?_without_tcpconns:1}
 %define with_teamspeak2 0%{!?_without_teamspeak2:1}
 %define with_ted 0%{!?_without_ted:1}
 %define with_thermal 0%{!?_without_thermal:1}
 %define with_threshold 0%{!?_without_threshold:1}
+%define with_tokyotyrant 0%{!?_without_tokyotyrant:0}
 %define with_turbostat 0%{!?_without_turbostat:1}
 %define with_unixsock 0%{!?_without_unixsock:1}
 %define with_uptime 0%{!?_without_uptime:1}
@@ -169,160 +164,42 @@
 %define with_vmem 0%{!?_without_vmem:1}
 %define with_vserver 0%{!?_without_vserver:1}
 %define with_wireless 0%{!?_without_wireless:1}
+%define with_wlm 0%{!?_without_wlm:0}
+%define with_wpar 0%{!?_without_wpar:0}
 %define with_write_graphite 0%{!?_without_write_graphite:1}
 %define with_write_http 0%{!?_without_write_http:1}
 %define with_write_influxdb_udp 0%{!?_without_write_influxdb_udp:1}
+%define with_write_kafka 0%{!?_without_write_kafka:1}
 %define with_write_log 0%{!?_without_write_log:1}
+%define with_write_mongodb 0%{!?_without_write_mongodb:1}
 %define with_write_prometheus 0%{!?_without_write_prometheus:1}
 %define with_write_redis 0%{!?_without_write_redis:1}
 %define with_write_riemann 0%{!?_without_write_riemann:1}
-%define with_write_stackdriver 0%{!?_without_write_stackdriver:1}
+%define with_write_stackdriver 0%{!?_without_write_stackdriver:0}
 %define with_write_sensu 0%{!?_without_write_sensu:1}
 %define with_write_syslog 0%{!?_without_write_syslog:1}
 %define with_write_tsdb 0%{!?_without_write_tsdb:1}
+%define with_xencpu 0%{!?_without_xencpu:0}
 %define with_xmms 0%{!?_without_xmms:0%{?_has_xmms}}
 %define with_zfs_arc 0%{!?_without_zfs_arc:1}
+%define with_zone 0%{!?_without_zone:0}
 %define with_zookeeper 0%{!?_without_zookeeper:1}
 
-%define with_write_mongodb 0%{!?_without_write_mongodb:1}
-%define with_mongodb 0%{!?_without_mongodb:1}
-
-# Plugins not built by default because of dependencies on libraries not
-# available in RHEL or EPEL:
-
-# plugin apple_sensors disabled, requires a Mac
-%define with_apple_sensors 0%{!?_without_apple_sensors:0}
-# plugin aquaero disabled, requires a libaquaero5
-%define with_aquaero 0%{!?_without_aquaero:0}
-# plugin capabilities disabled, requires libjansson
-%define with_capabilities 0%{!?_with_capabilities:0}
-# plugin barometer disabled, requires a libi2c
-%define with_barometer 0%{!?_without_barometer:0}
-# plugin dpdkevents disabled, requires libdpdk
-%define with_dpdkevents 0%{!?_without_dpdkevents:0}
-# plugin dpdk_telemetry.
-%define with_dpdk_telemetry 0%{!?_without_dpdk_telemetry:0}
-# plugin dpdkstat disabled, requires libdpdk
-%define with_dpdkstat 0%{!?_without_dpdkstat:0}
-# plugin grpc disabled, requires protobuf-compiler >= 3.0
-%define with_grpc 0%{!?_without_grpc:0}
-# plugin lpar disabled, requires AIX
-%define with_lpar 0%{!?_without_lpar:0}
-# plugin mic disabled, requires Mic
-%define with_mic 0%{!?_without_mic:0}
-# plugin netapp disabled, requires libnetapp
-%define with_netapp 0%{!?_without_netapp:0}
-# plugin onewire disabled, requires libowfs
-%define with_onewire 0%{!?_without_onewire:0}
-# plugin pf disabled, requires BSD
-%define with_pf 0%{!?_without_pf:0}
-# plugin routeros disabled, requires librouteros
-%define with_routeros 0%{!?_without_routeros:0}
-# plugin sigrok disabled, requires libsigrok
-%define with_sigrok 0%{!?_without_sigrok:0}
-# plugin tape disabled, requires libkstat
-%define with_tape 0%{!?_without_tape:0}
-# plugin tokyotyrant disabled, requires tcrdb.h
-%define with_tokyotyrant 0%{!?_without_tokyotyrant:0}
-# plugin write_kafka disabled, requires librdkafka
-%define with_write_kafka 0%{!?_without_write_kafka:0}
-# plugin xencpu disabled, requires xen-devel from non-default repo
-%define with_xencpu 0%{!?_without_xencpu:0}
-# plugin zone disabled, requires Solaris
-%define with_zone 0%{!?_without_zone:0}
-# plugin gpu_nvidia requires cuda-nvml-dev
-# get it from https://developer.nvidia.com/cuda-downloads
-# then install cuda-nvml-dev-10-1 or other version
-%define with_gpu_nvidia 0%{!?_without_gpu_nvidia:0}
-# not sure why this one's failing
-%define with_write_stackdriver 0%{!?_without_write_stackdriver:0}
-
-%define with_gmond 0%{!?_without_gmond:0}
-%define with_diskadapter 0%{!?_with_diskadapter:0}
-%define with_diskpath 0%{!?_with_diskpath:0}
-%define with_hba 0%{!?_without_hba:0}
-%define with_lvm 0%{!?_without_lvm:0}
-%define with_snmp_agent 0%{!?_without_snmp_agent:0}
-%define with_synproxy 0%{!?_without_synproxy:0}
-%define with_wlm 0%{!?_without_wlm:0}
-%define with_wpar 0%{!?_without_wpar:0}
-%define with_slurm 0%{!?_without_slurm:0}
-%define with_ipstats 0%{!?_with_ipstats:0}
-%define with_dcpmm 0%{!?_with_dcpmm:0}
-
-%define with_redfish 0%{!?_without_redfish:0}
-%define with_intel_pmu 0%{!?_without_intel_pmu:0}
-%define with_intel_rdt 0%{!?_without_intel_rdt:0}
-
-%define with_netstat_udp 0%{!?_without_netstat_udp:0}
-%define with_ras 0%{!?_without_ras:0}
-
-# Plugins not buildable on RHEL < 6
-%if 0%{?rhel} && 0%{?rhel} < 6
-%define with_ceph 0
-%define with_curl_json 0
-%define with_log_logstash 0
-%define with_dns 0
-%define with_ethstat 0
-%define with_gmond 0
-%define with_iptables 0
-%define with_ipvs 0
-%define with_lvm 0
-%define with_modbus 0
-%define with_netlink 0
-%define with_smart 0
-%define with_turbostat 0
-%define with_write_prometheus 0
-%define with_write_riemann 0
-%endif
-
-# Plugins not buildable on RHEL < 7
-%if 0%{?rhel} && 0%{?rhel} < 7
-%define with_connectivity 0
-%define with_cpusleep 0
-%define with_gps 0
-%define with_mqtt 0
-%define with_ovs_events 0
-%define with_ovs_stats 0
-%define with_procevent 0
-%define with_redis 0
-%define with_rrdcached 0
-%define with_sysevent 0
-%define with_write_redis 0
-%define with_write_riemann 0
-%define with_xmms 0
-%define with_intel_pmu 0
-%define with_intel_rdt 0
-%define with_write_mongodb 0
+# Plugins not buildable on RHEL 7
+%if 0%{?rhel} && 0%{?rhel} == 7
 %define with_mongodb 0
-%define with_pinba 0
-%define with_varnish 0
-%define with_smart 0
-%define with_write_prometheus 0
-%define with_redfish 0
 %endif
 
-# Plugins not buildable on RHEL < 8
-%if 0%{?rhel} && 0%{?rhel} < 8
-%define with_amqp 0
-%define with_amqp1 0
+# Plugins not buildable on RHEL 8
+%if 0%{?rhel} && 0%{?rhel} == 8
 %define with_modbus 0
-%define with_mqtt 0
-%define with_nut 0
-%define with_write_riemann 0
-%define with_gps 0
 %endif
 
-# Plugins not buildable on RHEL < 9
-%if 0%{?rhel} && 0%{?rhel} < 9
-%define with_amqp 0
-%define with_amqp1 0
+# Plugins not buildable on RHEL 9
+%if 0%{?rhel} && 0%{?rhel} == 9
+%define with_iptables 0
+%define with_perl 0
 %define with_modbus 0
-%define with_mqtt 0
-%define with_nut 0
-%define with_write_riemann 0
-%define with_gps 0
-%define with_notify_email 0
 %endif
 
 Summary:        Statistics collection and monitoring daemon
@@ -335,6 +212,7 @@ License:        GPLv2
 Group:	        System Environment/Daemons
 BuildRoot:      %{_tmppath}/%{name}-%{version}-root
 BuildRequires:  libgcrypt-devel, kernel-headers, libcap-devel, which
+BuildRequires:  flex, bison
 Vendor:         collectd development team <collectd@verplant.org>
 
 %if 0%{?fedora} || 0%{?rhel} >= 7
@@ -342,7 +220,7 @@ BuildRequires:      xfsprogs-devel
 %{?systemd_requires}
 BuildRequires:      systemd
 BuildRequires:      libudev-devel
-Requires:	        collectd-selinux
+Requires:	          collectd-selinux
 %else
 Requires(post):     chkconfig
 Requires(preun):    chkconfig, initscripts
@@ -716,7 +594,7 @@ Requires:	%{name}%{?_isa} = %{version}-%{release}
 %if 0%{?rhel} && 0%{?rhel} > 5 && 0%{?rhel} < 8 
 BuildRequires:	mysql-devel
 %endif
-%if 0%{?rhel} && 0%{?rhel} > 7 && 0%{?rhel} < 9
+%if 0%{?rhel} && 0%{?rhel} > 7 && 0%{?rhel} < 10
 BuildRequires:	mariadb-connector-c-devel
 %endif
 %description mysql
@@ -2698,6 +2576,9 @@ fi
 %endif
 %if %{with_disk}
 %{_libdir}/%{name}/disk.so
+%endif
+%if %{with_dpdk_telemetry}
+%{_libdir}/%{name}/dpdk_telemetry.so
 %endif
 %if %{with_drbd}
 %{_libdir}/%{name}/drbd.so

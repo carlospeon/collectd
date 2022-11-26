@@ -2580,6 +2580,7 @@ uninstall-hook:
 	rm -f $(DESTDIR)$(sysconfdir)/collectd.conf
 	rm -f $(DESTDIR)$(cpkgdatadir)/postgresql_default.conf;
 
+if BUILD_PLUGIN_PERL
 all-local: @PERL_BINDINGS@
 
 install-exec-local:
@@ -2620,7 +2621,7 @@ buildperl/Makefile.PL: .perl-directory-stamp $(top_builddir)/config.status
 	touch $@
 
 .PHONY: perl
-
+endif
 
 if BUILD_WITH_JAVA
 dist_noinst_JAVA = \
