@@ -93,7 +93,7 @@ typedef struct buffer {
   char *data;
   char *ptr;
   int fill;
-  cdtime_t last_update;
+  cdtime_t first_write;
   pthread_mutex_t mutex;
 } buffer_t;
 
@@ -323,7 +323,7 @@ static void write_influxdb_udp_init_buffer(buffer_t *buffer) {
   memset(buffer->data, 0, wifxudp_config_packet_size);
   buffer->ptr = buffer->data;
   buffer->fill = 0;
-  buffer->last_update = 0;
+  buffer->first_write = 0;
 } /* write_influxdb_udp_init_buffer */
 
 static void write_influxdb_udp_send_buffer(sockent_t *sending_socket,
@@ -422,7 +422,8 @@ write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
 
   send_buffer.fill += status;
   send_buffer.ptr += status;
-  send_buffer.last_update = cdtime();
+  if(send_buffer.first_write == 0)
+    send_buffer.first_write = cdtime();
 
   if (wifxudp_config_packet_size - send_buffer.fill < 120)
     /* No room for a new point of average size in buffer,
@@ -628,7 +629,7 @@ static int write_influxdb_udp_flush(cdtime_t timeout,
     if (buffer_node->buffer->fill > 0) {
       if (timeout > 0) {
         cdtime_t now = cdtime();
-        if ((buffer_node->buffer->last_update + timeout) > now) {
+        if ((buffer_node->buffer->first_write + timeout) > now) {
           pthread_mutex_unlock(&buffer_node->buffer->mutex);
           continue;
         }

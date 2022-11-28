@@ -1450,7 +1450,7 @@ static int ps_read_process(long pid, process_entry_t *ps, char *state) {
 } /* int ps_read_process (...) */
 
 static int procs_running(void) {
-  char buffer[4096] = {};
+  char buffer[32768] = {};
   char id[] = "procs_running "; /* white space terminated */
   char *running;
   char *endptr = NULL;
