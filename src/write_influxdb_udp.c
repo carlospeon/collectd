@@ -385,6 +385,7 @@ write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
       return -1;
     }
     buffer_node->buffer = &send_buffer;
+    buffer_node->next = NULL;
 
     pthread_mutex_lock(&buffer_list_mutex);
     if (buffer_list_head != NULL)
@@ -422,7 +423,7 @@ write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
 
   send_buffer.fill += status;
   send_buffer.ptr += status;
-  if(send_buffer.first_write == 0)
+  if (send_buffer.first_write == 0)
     send_buffer.first_write = cdtime();
 
   if (wifxudp_config_packet_size - send_buffer.fill < 120)
@@ -574,6 +575,7 @@ static int write_influxdb_udp_config(oconfig_item_t *ci) {
 } /* int write_influxdb_udp_config */
 
 static int write_influxdb_udp_shutdown(void) {
+  pthread_mutex_lock(&buffer_list_mutex);
   buffer_node_t *buffer_node;
   while ((buffer_node = buffer_list_head) != NULL) {
     buffer_list_head = buffer_node->next;
@@ -584,7 +586,7 @@ static int write_influxdb_udp_shutdown(void) {
           "number %d",
           buffer_list_length);
   }
-  // pthread_mutex_unlock(&buffer_list_mutex);
+  pthread_mutex_unlock(&buffer_list_mutex);
 
   for (sockent_t *se = sending_sockets; se != NULL; se = se->next)
     sockent_client_disconnect(se);

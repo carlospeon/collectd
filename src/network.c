@@ -2827,6 +2827,7 @@ static int network_write(const data_set_t *ds, const value_list_t *vl,
       return -1;
     }
     buffer_node->buffer = &send_buffer;
+    buffer_node->next = NULL;
 
     pthread_mutex_lock(&buffer_list_mutex);
     if (buffer_list_head != NULL)
@@ -3304,6 +3305,7 @@ static int network_shutdown(void) {
   sockent_destroy(listen_sockets);
 
   buffer_node_t *buffer_node;
+  pthread_mutex_lock(&buffer_list_mutex);
   while ((buffer_node = buffer_list_head) != NULL) {
     if (buffer_node->buffer->fill > 0)
       flush_buffer(buffer_node->buffer);
@@ -3312,6 +3314,7 @@ static int network_shutdown(void) {
     sfree(buffer_node);
     buffer_list_length--;
   }
+  pthread_mutex_unlock(&buffer_list_mutex);
 
   for (sockent_t *se = sending_sockets; se != NULL; se = se->next)
     sockent_client_disconnect(se);

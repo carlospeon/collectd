@@ -204,7 +204,7 @@
 
 Summary:        Statistics collection and monitoring daemon
 Name:           collectd
-Version:        5.12.0.itx.3
+Version:        5.12.0.itx.4
 Release:        1%{?dist}
 URL:            https://collectd.org
 Source:         https://collectd.org/files/%{name}-%{version}.tar.bz2
@@ -947,7 +947,7 @@ Monitors rsyslog for system events.
 Summary:	Varnish plugin for collectd
 Group:		System Environment/Daemons
 Requires:	%{name}%{?_isa} = %{version}-%{release}
-BuildRequires:	varnish-libs-devel
+BuildRequires:	varnish-devel
 %description varnish
 The Varnish plugin collects information about Varnish, an HTTP accelerator.
 %endif
