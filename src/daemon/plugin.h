@@ -188,18 +188,18 @@ struct plugin_ctx_s {
 };
 typedef struct plugin_ctx_s plugin_ctx_t;
 
-typedef struct write_queue_s {
+typedef struct write_batch_s {
   value_list_t *vl;
   plugin_ctx_t ctx;
+  struct write_batch_s *next;
+} write_batch_t;
+
+typedef struct write_queue_s {
+  write_batch_t *batch_head;
+  write_batch_t *batch_tail;
+  long batch_length;
   struct write_queue_s *next;
 } write_queue_t;
-
-typedef struct root_write_queue {
-  write_queue_t *head;
-  write_queue_t *tail;
-  long length;
-  struct root_write_queue *next;
-} root_write_queue_t;
 
 /*
  * Callback types
@@ -388,7 +388,7 @@ int plugin_dispatch_values(value_list_t const *vl);
  * ARGUMENTS
  *  none
  */
-root_write_queue_t *plugin_init_root_write_queue(void);
+write_queue_t *plugin_init_write_queue(void);
 
 /*
  * NAME
@@ -404,9 +404,9 @@ root_write_queue_t *plugin_init_root_write_queue(void);
  *  `length' length of the queue with subqueues to dispatch.
  *  `sum_length' sum of lengths of all subqueues to dispatch.
  */
-int plugin_dispatch_value_queue(root_write_queue_t *root_head,
-                                root_write_queue_t *root_tail, long length,
-                                long sum_length);
+int plugin_dispatch_value_queue(write_queue_t *head,
+                                write_queue_t *tail, long length,
+                                long batch_sum_length);
 
 /*
  * NAME
