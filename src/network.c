@@ -315,12 +315,12 @@ static int buffer_list_length;
 static pthread_mutex_t buffer_list_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Dispatch threads write queue */
-static __thread root_write_queue_t *root_write_queue_head;
-static __thread root_write_queue_t *root_write_queue_tail;
-static __thread long root_write_queue_length;
-static __thread long root_write_queue_sum_length;
-static __thread root_write_queue_t *root_write_queue;
-static __thread char root_write_queue_host[DATA_MAX_NAME_LEN];
+static __thread write_queue_t *write_queue_head;
+static __thread write_queue_t *write_queue_tail;
+static __thread long write_queue_length;
+static __thread long write_queue_batch_sum_length;
+static __thread write_queue_t *write_queue;
+static __thread char write_queue_host[DATA_MAX_NAME_LEN];
 
 /* XXX: These counters are incremented from one place only. The spot in which
  * the values are incremented is either only reachable by one thread (the
@@ -393,54 +393,54 @@ static bool check_send_okay(const value_list_t *vl) /* {{{ */
   return !received;
 } /* }}} bool check_send_okay */
 
-static int network_enqueue_write_queue(write_queue_t *q) {
-  if (root_write_queue_head == NULL) {
+static int network_enqueue_write_queue(write_batch_t *b) {
+  if (write_queue_head == NULL) {
     size_t num_queues =
         plugin_get_write_threads_num() / dispatch_threads_number;
     if (num_queues < 1)
       num_queues = 1;
     for (size_t i = 0; i < num_queues; i++) {
-      root_write_queue_t *rq = plugin_init_root_write_queue();
-      if (rq == NULL) {
+      write_queue_t *q = plugin_init_write_queue();
+      if (q == NULL) {
         ERROR("network plugin: network_enqueue_write_queue "
-              "plugin_init_root_write_queue failed");
-        while ((rq = root_write_queue_head) != NULL) {
-          root_write_queue_head = root_write_queue_head->next;
-          sfree(rq);
+              "plugin_init_write_queue failed");
+        while ((q = write_queue_head) != NULL) {
+          write_queue_head = write_queue_head->next;
+          sfree(q);
         }
-        root_write_queue_head = NULL;
-        root_write_queue_tail = NULL;
-        root_write_queue_length = 0;
-        root_write_queue_sum_length = 0;
+        write_queue_head = NULL;
+        write_queue_tail = NULL;
+        write_queue_length = 0;
+        write_queue_batch_sum_length = 0;
         return -ENOMEM;
       }
-      if (root_write_queue_tail == NULL) {
-        root_write_queue_head = rq;
+      if (write_queue_tail == NULL) {
+        write_queue_head = q;
       } else {
-        root_write_queue_tail->next = rq;
+        write_queue_tail->next = q;
       }
-      root_write_queue_tail = rq;
-      root_write_queue_length++;
+      write_queue_tail = q;
+      write_queue_length++;
     }
-    root_write_queue = root_write_queue_head;
-    sstrncpy(root_write_queue_host, q->vl->host, sizeof(root_write_queue_host));
+    write_queue = write_queue_head;
+    sstrncpy(write_queue_host, b->vl->host, sizeof(write_queue_host));
   }
 
-  if (strcmp(root_write_queue_host, q->vl->host) != 0) {
-    sstrncpy(root_write_queue_host, q->vl->host, sizeof(root_write_queue_host));
-    root_write_queue = root_write_queue->next;
-    if (root_write_queue == NULL)
-      root_write_queue = root_write_queue_head;
+  if (strcmp(write_queue_host, b->vl->host) != 0) {
+    sstrncpy(write_queue_host, b->vl->host, sizeof(write_queue_host));
+    write_queue = write_queue->next;
+    if (write_queue == NULL)
+      write_queue = write_queue_head;
   }
 
-  if (root_write_queue->tail == NULL) {
-    root_write_queue->head = q;
+  if (write_queue->batch_tail == NULL) {
+    write_queue->batch_head = b;
   } else {
-    root_write_queue->tail->next = q;
+    write_queue->batch_tail->next = b;
   }
-  root_write_queue->tail = q;
-  root_write_queue->length += 1;
-  root_write_queue_sum_length += 1;
+  write_queue->batch_tail = b;
+  write_queue->batch_length += 1;
+  write_queue_batch_sum_length += 1;
 
   return 0;
 }
@@ -523,32 +523,32 @@ static int network_enqueue_values(value_list_t *vl, /* {{{ */
     }
   }
 
-  write_queue_t *q = malloc(sizeof(*q));
-  if (q == NULL) {
+  write_batch_t *b = malloc(sizeof(*b));
+  if (b == NULL) {
     meta_data_destroy(vl->meta);
     vl->meta = NULL;
     return -ENOMEM;
   }
-  q->next = NULL;
+  b->next = NULL;
 
-  q->vl = plugin_value_list_clone(vl);
-  if (q->vl == NULL) {
+  b->vl = plugin_value_list_clone(vl);
+  if (b->vl == NULL) {
     meta_data_destroy(vl->meta);
     vl->meta = NULL;
-    sfree(q);
+    sfree(b);
     return -ENOMEM;
   }
 
   /* Store context of caller (read plugin); otherwise, it would not be
    * available to the write plugins when actually dispatching the
    * value-list later on. */
-  q->ctx = plugin_get_ctx();
+  b->ctx = plugin_get_ctx();
 
-  status = network_enqueue_write_queue(q);
+  status = network_enqueue_write_queue(b);
   if (status != 0) {
     meta_data_destroy(vl->meta);
     vl->meta = NULL;
-    sfree(q);
+    sfree(b);
     return status;
   }
 
@@ -2343,16 +2343,16 @@ static void *dispatch_thread(void *stats) /* {{{ */
       sfree(ent);
     }
 
-    if (root_write_queue_sum_length > 0) {
-      plugin_dispatch_value_queue(root_write_queue_head, root_write_queue_tail,
-                                  root_write_queue_length,
-                                  root_write_queue_sum_length);
-      stats_values_dispatched->accepted += root_write_queue_sum_length;
+    if (write_queue_batch_sum_length > 0) {
+      plugin_dispatch_value_queue(write_queue_head, write_queue_tail,
+                                  write_queue_length,
+                                  write_queue_batch_sum_length);
+      stats_values_dispatched->accepted += write_queue_batch_sum_length;
 
-      root_write_queue_head = NULL;
-      root_write_queue_tail = NULL;
-      root_write_queue_length = 0;
-      root_write_queue_sum_length = 0;
+      write_queue_head = NULL;
+      write_queue_tail = NULL;
+      write_queue_length = 0;
+      write_queue_batch_sum_length = 0;
     }
 
   } /* while (42) */

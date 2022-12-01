@@ -204,8 +204,8 @@
 
 Summary:        Statistics collection and monitoring daemon
 Name:           collectd
-Version:        5.12.0.itx.4
-Release:        1%{?dist}
+Version:        %{?version}
+Release:        %{?release}%{?dist}
 URL:            https://collectd.org
 Source:         https://collectd.org/files/%{name}-%{version}.tar.bz2
 License:        GPLv2
