@@ -404,9 +404,8 @@ write_queue_t *plugin_init_write_queue(void);
  *  `length' length of the queue with subqueues to dispatch.
  *  `sum_length' sum of lengths of all subqueues to dispatch.
  */
-int plugin_dispatch_value_queue(write_queue_t *head,
-                                write_queue_t *tail, long length,
-                                long batch_sum_length);
+int plugin_dispatch_value_queue(write_queue_t *head, write_queue_t *tail,
+                                long length, long batch_sum_length);
 
 /*
  * NAME
@@ -496,6 +495,9 @@ int plugin_notification_meta_copy(notification_t *dst,
                                   const notification_t *src);
 
 int plugin_notification_meta_free(notification_meta_t *n);
+
+int plugin_notification_meta_get_boolean(notification_meta_t *n,
+                                         const char *name, bool *value);
 
 /*
  * Plugin context management.

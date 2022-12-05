@@ -3212,6 +3212,32 @@ static int network_config(oconfig_item_t *ci) /* {{{ */
   return 0;
 } /* }}} int network_config */
 
+static bool check_send_notification(const notification_t *n) {
+  bool received = 0;
+  int status;
+
+  if (network_config_forward)
+    return true;
+
+  if (n->meta == NULL)
+    return true;
+
+  status = plugin_notification_meta_get_boolean(n->meta, "network:received",
+                                                &received);
+  if (status == -ENOENT)
+    return true;
+  else if (status != 0) {
+    ERROR("network plugin: check_send_notification: "
+          "plugin_notification_meta_get_boolean failed with status %i.",
+          status);
+    return true;
+  }
+
+  /* By default, only *send* value lists that were not *received* by the
+   * network plugin. */
+  return !received;
+}
+
 static int network_notification(const notification_t *n,
                                 user_data_t __attribute__((unused)) *
                                     user_data) {
@@ -3219,6 +3245,13 @@ static int network_notification(const notification_t *n,
   char *buffer_ptr = buffer;
   size_t buffer_free = sizeof(buffer);
   int status;
+
+  if (!check_send_notification(n)) {
+    DEBUG("network plugin: network_notification: "
+          "NOT sending %s.",
+          n->message);
+    return 0;
+  }
 
   memset(buffer, 0, sizeof(buffer));
 
