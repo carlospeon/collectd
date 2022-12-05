@@ -850,9 +850,8 @@ static int plugin_write_enqueue(value_list_t const *vl) /* {{{ */
   return 0;
 } /* }}} int plugin_write_enqueue */
 
-static int plugin_write_enqueue_queue(write_queue_t *head,
-                                      write_queue_t *tail, long length,
-                                      long batch_sum_length) {
+static int plugin_write_enqueue_queue(write_queue_t *head, write_queue_t *tail,
+                                      long length, long batch_sum_length) {
   pthread_mutex_lock(&write_lock);
 
   if (write_queue_tail == NULL) {
@@ -2561,9 +2560,8 @@ EXPORT int plugin_dispatch_values(value_list_t const *vl) {
   return 0;
 }
 
-EXPORT int plugin_dispatch_value_queue(write_queue_t *head,
-                                       write_queue_t *tail, long length,
-                                       long batch_sum_length) {
+EXPORT int plugin_dispatch_value_queue(write_queue_t *head, write_queue_t *tail,
+                                       long length, long batch_sum_length) {
   if (head == NULL || tail == NULL || length == 0 || batch_sum_length == 0)
     return 0;
 
@@ -2963,6 +2961,18 @@ int plugin_notification_meta_free(notification_meta_t *n) {
 
   return 0;
 } /* int plugin_notification_meta_free */
+
+int plugin_notification_meta_get_boolean(notification_meta_t *n,
+                                         const char *name, bool *value) {
+  for (notification_meta_t *meta = n; meta != NULL; meta = meta->next) {
+    if (meta->type == NM_TYPE_BOOLEAN &&
+        strncmp(name, meta->name, strlen(name)) == 0) {
+      *value = meta->nm_value.nm_boolean;
+      return 0;
+    }
+  }
+  return -ENOENT;
+}
 
 static void plugin_ctx_destructor(void *ctx) {
   sfree(ctx);
