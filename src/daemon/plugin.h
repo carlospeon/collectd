@@ -205,6 +205,7 @@ typedef struct write_queue_s {
  * Callback types
  */
 typedef int (*plugin_init_cb)(void);
+typedef int (*plugin_thread_start_cb)(void);
 typedef int (*plugin_read_cb)(user_data_t *);
 typedef int (*plugin_write_cb)(const data_set_t *, const value_list_t *,
                                user_data_t *);
@@ -220,6 +221,7 @@ typedef int (*plugin_missing_cb)(const value_list_t *, user_data_t *);
  */
 typedef int (*plugin_cache_event_cb)(cache_event_t *, user_data_t *);
 typedef void (*plugin_log_cb)(int severity, const char *message, user_data_t *);
+typedef int (*plugin_thread_stop_cb)(void);
 typedef int (*plugin_shutdown_cb)(void);
 typedef int (*plugin_notification_cb)(const notification_t *, user_data_t *);
 /*
@@ -310,6 +312,8 @@ int plugin_register_config(const char *name,
 int plugin_register_complex_config(const char *type,
                                    int (*callback)(oconfig_item_t *));
 int plugin_register_init(const char *name, plugin_init_cb callback);
+int plugin_register_thread_start(const char *name,
+                                 plugin_thread_start_cb callback);
 int plugin_register_read(const char *name, int (*callback)(void));
 /* "user_data" will be freed automatically, unless
  * "plugin_register_complex_read" returns an error (non-zero). */
@@ -325,6 +329,8 @@ int plugin_register_missing(const char *name, plugin_missing_cb callback,
 int plugin_register_cache_event(const char *name,
                                 plugin_cache_event_cb callback,
                                 user_data_t const *ud);
+int plugin_register_thread_stop(const char *name,
+                                plugin_thread_stop_cb callback);
 int plugin_register_shutdown(const char *name, plugin_shutdown_cb callback);
 int plugin_register_shutdown_first(const char *name,
                                    plugin_shutdown_cb callback);
@@ -338,12 +344,14 @@ int plugin_register_notification(const char *name,
 int plugin_unregister_config(const char *name);
 int plugin_unregister_complex_config(const char *name);
 int plugin_unregister_init(const char *name);
+int plugin_unregister_thread_start(const char *name);
 int plugin_unregister_read(const char *name);
 int plugin_unregister_read_group(const char *group);
 int plugin_unregister_write(const char *name);
 int plugin_unregister_flush(const char *name);
 int plugin_unregister_missing(const char *name);
 int plugin_unregister_cache_event(const char *name);
+int plugin_unregister_thread_stop(const char *name);
 int plugin_unregister_shutdown(const char *name);
 int plugin_unregister_data_set(const char *name);
 int plugin_unregister_log(const char *name);
