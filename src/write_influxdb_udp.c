@@ -361,16 +361,14 @@ static void flush_buffer(buffer_t *buffer) {
   write_influxdb_udp_init_buffer(buffer);
 }
 
-static int
-write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
-                         user_data_t __attribute__((unused)) * user_data) {
+static int write_influxdb_udp_thread_start(void) {
   pthread_mutex_lock(&send_buffer.mutex);
 
   if (send_buffer.data == NULL) {
     send_buffer.data = malloc(wifxudp_config_packet_size);
     if (send_buffer.data == NULL) {
-      ERROR("write_influxdb_udp: write_influxdb_udp_write send_buffer malloc "
-            "failed.");
+      ERROR("write_influxdb_udp: write_influxdb_udp_thread_start "
+            "send_buffer malloc failed.");
       pthread_mutex_unlock(&send_buffer.mutex);
       return -1;
     }
@@ -378,8 +376,8 @@ write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
 
     buffer_node_t *buffer_node = malloc(sizeof(*buffer_node));
     if (buffer_node == NULL) {
-      ERROR("write_influxdb_udp: write_influxdb_udp_write buffer_node malloc "
-            "failed.");
+      ERROR("write_influxdb_udp: write_influxdb_udp_thread_start "
+            "buffer_node malloc failed.");
       sfree(send_buffer.data);
       pthread_mutex_unlock(&send_buffer.mutex);
       return -1;
@@ -392,10 +390,19 @@ write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
       buffer_node->next = buffer_list_head;
     buffer_list_head = buffer_node;
     buffer_list_length++;
-    DEBUG("write_influxdb_udp: write_influxdb_udp_write added buffer number %d",
+    DEBUG("write_influxdb_udp: write_influxdb_udp_thread_start "
+          "added buffer number %d",
           buffer_list_length);
     pthread_mutex_unlock(&buffer_list_mutex);
   }
+  pthread_mutex_unlock(&send_buffer.mutex);
+  return 0;
+} /* write_influxdb_udp_thread_start */
+
+static int
+write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
+                         user_data_t __attribute__((unused)) * user_data) {
+  pthread_mutex_lock(&send_buffer.mutex);
 
   int status = format_influxdb_value_list(
       send_buffer.ptr, wifxudp_config_packet_size - send_buffer.fill, ds, vl,
@@ -435,6 +442,38 @@ write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
   pthread_mutex_unlock(&send_buffer.mutex);
   return 0;
 } /* int write_influxdb_udp_write */
+
+static int write_influxdb_udp_thread_stop(void) {
+
+  pthread_mutex_lock(&send_buffer.mutex);
+  if (send_buffer.data != NULL)
+    sfree(send_buffer.data);
+  pthread_mutex_unlock(&send_buffer.mutex);
+
+  pthread_mutex_lock(&buffer_list_mutex);
+  buffer_node_t *buffer_node = buffer_list_head;
+  buffer_node_t *prev_buffer_node = NULL;
+  while (buffer_node != NULL) {
+    if (buffer_node->buffer != &send_buffer) {
+      prev_buffer_node = buffer_node;
+      buffer_node = buffer_node->next;
+      continue;
+    }
+    if (prev_buffer_node == NULL) {
+      buffer_list_head = buffer_node->next;
+    } else {
+      prev_buffer_node->next = buffer_node->next;
+    }
+    sfree(buffer_node);
+    buffer_list_length--;
+    DEBUG("write_influxdb_udp: write_influxdb_udp_thread_stop "
+          "removed buffer number %d",
+          buffer_list_length);
+    break;
+  }
+  pthread_mutex_unlock(&buffer_list_mutex);
+  return 0;
+} /* write_influxdb_udp_thread_stop */
 
 static int wifxudp_config_set_ttl(const oconfig_item_t *ci) {
   int tmp = 0;
@@ -575,18 +614,6 @@ static int write_influxdb_udp_config(oconfig_item_t *ci) {
 } /* int write_influxdb_udp_config */
 
 static int write_influxdb_udp_shutdown(void) {
-  pthread_mutex_lock(&buffer_list_mutex);
-  buffer_node_t *buffer_node;
-  while ((buffer_node = buffer_list_head) != NULL) {
-    buffer_list_head = buffer_node->next;
-    sfree(buffer_node->buffer->data);
-    sfree(buffer_node);
-    buffer_list_length--;
-    DEBUG("write_influxdb_udp: write_influxdb_udp_shutdown removed buffer "
-          "number %d",
-          buffer_list_length);
-  }
-  pthread_mutex_unlock(&buffer_list_mutex);
 
   for (sockent_t *se = sending_sockets; se != NULL; se = se->next)
     sockent_client_disconnect(se);
@@ -594,6 +621,8 @@ static int write_influxdb_udp_shutdown(void) {
 
   plugin_unregister_config("write_influxdb_udp");
   plugin_unregister_init("write_influxdb_udp");
+  plugin_unregister_thread_start("write_influxdb_udp");
+  plugin_unregister_thread_stop("write_influxdb_udp");
   plugin_unregister_write("write_influxdb_udp");
   plugin_unregister_shutdown("write_influxdb_udp");
 
@@ -613,6 +642,10 @@ static int write_influxdb_udp_init(void) {
 
   /* setup socket(s) and so on */
   if (sending_sockets != NULL) {
+    plugin_register_thread_stop("write_influxdb_udp",
+                                write_influxdb_udp_thread_stop);
+    plugin_register_thread_start("write_influxdb_udp",
+                                 write_influxdb_udp_thread_start);
     plugin_register_write("write_influxdb_udp", write_influxdb_udp_write,
                           /* user_data = */ NULL);
   }

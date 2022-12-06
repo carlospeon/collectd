@@ -2782,7 +2782,44 @@ static int update_stats_values_sent(int sent) {
     stats_values_sent->rejected -= sent;
   }
   return 0;
-}
+} /* update_stats_values_sent */
+
+static int network_thread_start(void) {
+  pthread_mutex_lock(&send_buffer.mutex);
+
+  if (send_buffer.data == NULL) {
+    send_buffer.data = malloc(network_config_packet_size);
+    if (send_buffer.data == NULL) {
+      ERROR("network: network_thread_start send_buffer malloc failed.");
+      pthread_mutex_unlock(&send_buffer.mutex);
+      return -1;
+    }
+    network_init_buffer(&send_buffer);
+
+    buffer_node_t *buffer_node = malloc(sizeof(*buffer_node));
+    if (buffer_node == NULL) {
+      ERROR("network: network_thread_start buffer_node malloc failed.");
+      sfree(send_buffer.data);
+      pthread_mutex_unlock(&send_buffer.mutex);
+      return -1;
+    }
+    buffer_node->buffer = &send_buffer;
+    buffer_node->next = NULL;
+
+    pthread_mutex_lock(&buffer_list_mutex);
+    if (buffer_list_head != NULL)
+      buffer_node->next = buffer_list_head;
+    buffer_list_head = buffer_node;
+    buffer_list_length++;
+    DEBUG("network: network_thread_start "
+          "write added buffer number %d",
+          buffer_list_length);
+    pthread_mutex_unlock(&buffer_list_mutex);
+  }
+
+  pthread_mutex_unlock(&send_buffer.mutex);
+  return 0;
+} /* network_thread_start */
 
 static int network_write(const data_set_t *ds, const value_list_t *vl,
                          user_data_t __attribute__((unused)) * user_data) {
@@ -2809,34 +2846,6 @@ static int network_write(const data_set_t *ds, const value_list_t *vl,
   uc_meta_data_add_unsigned_int(vl, "network:time_sent", (uint64_t)vl->time);
 
   pthread_mutex_lock(&send_buffer.mutex);
-
-  if (send_buffer.data == NULL) {
-    send_buffer.data = malloc(network_config_packet_size);
-    if (send_buffer.data == NULL) {
-      ERROR("network: network_write send_buffer malloc failed.");
-      pthread_mutex_unlock(&send_buffer.mutex);
-      return -1;
-    }
-    network_init_buffer(&send_buffer);
-
-    buffer_node_t *buffer_node = malloc(sizeof(*buffer_node));
-    if (buffer_node == NULL) {
-      ERROR("network: network_write buffer_node malloc failed.");
-      sfree(send_buffer.data);
-      pthread_mutex_unlock(&send_buffer.mutex);
-      return -1;
-    }
-    buffer_node->buffer = &send_buffer;
-    buffer_node->next = NULL;
-
-    pthread_mutex_lock(&buffer_list_mutex);
-    if (buffer_list_head != NULL)
-      buffer_node->next = buffer_list_head;
-    buffer_list_head = buffer_node;
-    buffer_list_length++;
-    DEBUG("network: network_write added buffer number %d", buffer_list_length);
-    pthread_mutex_unlock(&buffer_list_mutex);
-  }
 
   status = add_to_buffer(send_buffer.ptr,
                          network_config_packet_size -
@@ -2879,6 +2888,38 @@ static int network_write(const data_set_t *ds, const value_list_t *vl,
 
   return (status < 0) ? -1 : 0;
 } /* int network_write */
+
+static int network_thread_stop(void) {
+
+  pthread_mutex_lock(&send_buffer.mutex);
+  if (send_buffer.data != NULL)
+    sfree(send_buffer.data);
+  pthread_mutex_unlock(&send_buffer.mutex);
+
+  pthread_mutex_lock(&buffer_list_mutex);
+  buffer_node_t *buffer_node = buffer_list_head;
+  buffer_node_t *prev_buffer_node = NULL;
+  while (buffer_node != NULL) {
+    if (buffer_node->buffer != &send_buffer) {
+      prev_buffer_node = buffer_node;
+      buffer_node = buffer_node->next;
+      continue;
+    }
+    if (prev_buffer_node == NULL) {
+      buffer_list_head = buffer_node->next;
+    } else {
+      prev_buffer_node->next = buffer_node->next;
+    }
+    sfree(buffer_node);
+    buffer_list_length--;
+    DEBUG("write_influxdb_udp: write_influxdb_udp_thread_stop "
+          "removed buffer number %d",
+          buffer_list_length);
+    break;
+  }
+  pthread_mutex_unlock(&buffer_list_mutex);
+  return 0;
+} /* network_thread_stop */
 
 static int network_config_set_ttl(const oconfig_item_t *ci) /* {{{ */
 {
@@ -3337,24 +3378,14 @@ static int network_shutdown(void) {
 
   sockent_destroy(listen_sockets);
 
-  buffer_node_t *buffer_node;
-  pthread_mutex_lock(&buffer_list_mutex);
-  while ((buffer_node = buffer_list_head) != NULL) {
-    if (buffer_node->buffer->fill > 0)
-      flush_buffer(buffer_node->buffer);
-    buffer_list_head = buffer_node->next;
-    sfree(buffer_node->buffer->data);
-    sfree(buffer_node);
-    buffer_list_length--;
-  }
-  pthread_mutex_unlock(&buffer_list_mutex);
-
   for (sockent_t *se = sending_sockets; se != NULL; se = se->next)
     sockent_client_disconnect(se);
   sockent_destroy(sending_sockets);
 
   plugin_unregister_config("network");
   plugin_unregister_init("network");
+  plugin_unregister_thread_start("network");
+  plugin_unregister_thread_stop("network");
   plugin_unregister_write("network");
   plugin_unregister_shutdown("network");
 
@@ -3458,6 +3489,8 @@ static int network_init(void) {
 
   /* setup socket(s) and so on */
   if (sending_sockets != NULL) {
+    plugin_register_thread_stop("network", network_thread_stop);
+    plugin_register_thread_start("network", network_thread_start);
     plugin_register_write("network", network_write,
                           /* user_data = */ NULL);
     plugin_register_notification("network", network_notification,

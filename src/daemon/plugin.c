@@ -112,9 +112,11 @@ typedef struct flush_callback_s flush_callback_t;
 static c_avl_tree_t *plugins_loaded;
 
 static llist_t *list_init;
+static llist_t *list_thread_start;
 static llist_t *list_write;
 static llist_t *list_flush;
 static llist_t *list_missing;
+static llist_t *list_thread_stop;
 static llist_t *list_shutdown;
 static llist_t *list_log;
 static llist_t *list_notification;
@@ -900,6 +902,24 @@ static write_batch_t *plugin_write_dequeue(void) /* {{{ */
 
 static void *plugin_write_thread(void __attribute__((unused)) * args) /* {{{ */
 {
+
+  for (llentry_t *le = llist_head(list_thread_start); le != NULL;
+       le = le->next) {
+    callback_func_t *cf = le->value;
+    plugin_ctx_t old_ctx = plugin_set_ctx(cf->cf_ctx);
+    plugin_thread_start_cb callback = cf->cf_callback;
+    int status = (*callback)();
+    plugin_set_ctx(old_ctx);
+
+    if (status != 0) {
+      ERROR("Thread start of plugin `%s' "
+            "failed with status %i. "
+            "Write will be unregistered.",
+            le->key, status);
+      plugin_unregister_write(le->key);
+    }
+  }
+
   while (write_loop) {
     write_batch_t *b_head = plugin_write_dequeue();
     if (b_head == NULL)
@@ -912,6 +932,23 @@ static void *plugin_write_thread(void __attribute__((unused)) * args) /* {{{ */
       plugin_value_list_free(b->vl);
       b_head = b->next;
       sfree(b);
+    }
+  }
+
+  for (llentry_t *le = llist_head(list_thread_stop); le != NULL;
+       le = le->next) {
+    callback_func_t *cf = le->value;
+    plugin_ctx_t old_ctx = plugin_set_ctx(cf->cf_ctx);
+    plugin_thread_stop_cb callback = cf->cf_callback;
+    int status = (*callback)();
+    plugin_set_ctx(old_ctx);
+
+    if (status != 0) {
+      ERROR("Thread stop of plugin `%s' "
+            "failed with status %i. "
+            "Write will be unregistered.",
+            le->key, status);
+      plugin_unregister_write(le->key);
     }
   }
 
@@ -1335,6 +1372,12 @@ EXPORT int plugin_register_init(const char *name, int (*callback)(void)) {
                                   NULL);
 } /* plugin_register_init */
 
+EXPORT int plugin_register_thread_start(const char *name,
+                                        int (*callback)(void)) {
+  return create_register_callback(&list_thread_start, false, name,
+                                  (void *)callback, NULL);
+} /* plugin_register_thread_start */
+
 static int plugin_compare_read_func(const void *arg0, const void *arg1) {
   const read_func_t *rf0;
   const read_func_t *rf1;
@@ -1646,6 +1689,12 @@ EXPORT int plugin_register_cache_event(const char *name,
   return 0;
 } /* int plugin_register_cache_event */
 
+EXPORT int plugin_register_thread_stop(const char *name,
+                                       int (*callback)(void)) {
+  return create_register_callback(&list_thread_stop, false, name,
+                                  (void *)callback, NULL);
+} /* plugin_register_thread_stop */
+
 EXPORT int plugin_register_shutdown(const char *name, int (*callback)(void)) {
   return create_register_callback(&list_shutdown, false, name, (void *)callback,
                                   NULL);
@@ -1729,6 +1778,10 @@ EXPORT int plugin_unregister_complex_config(const char *name) {
 
 EXPORT int plugin_unregister_init(const char *name) {
   return plugin_unregister(list_init, name);
+}
+
+EXPORT int plugin_unregister_thread_start(const char *name) {
+  return plugin_unregister(list_thread_start, name);
 }
 
 EXPORT int plugin_unregister_read(const char *name) /* {{{ */
@@ -1878,6 +1931,10 @@ static void destroy_cache_event_callbacks() {
     sfree(cef->name);
     free_userdata(&cef->user_data);
   }
+}
+
+EXPORT int plugin_unregister_thread_stop(const char *name) {
+  return plugin_unregister(list_thread_stop, name);
 }
 
 EXPORT int plugin_unregister_shutdown(const char *name) {
