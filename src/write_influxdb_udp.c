@@ -444,8 +444,9 @@ write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
 } /* int write_influxdb_udp_write */
 
 static int write_influxdb_udp_thread_stop(void) {
-
   pthread_mutex_lock(&send_buffer.mutex);
+  flush_buffer(&send_buffer);
+
   if (send_buffer.data != NULL)
     sfree(send_buffer.data);
   pthread_mutex_unlock(&send_buffer.mutex);
