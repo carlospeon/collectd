@@ -5,7 +5,7 @@ Collectd fork focused on performance:
 * Add multiple dispatchs threads in the network plugin.
 * Move notification writes from read threads to its own thread.
 
-Check [Releases](https://github.com/carlospeon/collectd/releases) for rpm packages.
+Check Releases (https://github.com/carlospeon/collectd/releases) for rpm packages.
 
  collectd - System information collection daemon
 =================================================
