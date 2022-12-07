@@ -210,7 +210,7 @@ Name:           collectd
 Version:        %{?version}
 Release:        %{?release}%{?dist}
 URL:            https://collectd.org
-Source:         https://collectd.org/files/%{name}-%{version}.tar.bz2
+Source0:        %{name}-%{version}.tar.gz
 License:        GPLv2
 Group:	        System Environment/Daemons
 BuildRoot:      %{_tmppath}/%{name}-%{version}-root
