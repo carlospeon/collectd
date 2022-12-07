@@ -1,4 +1,9 @@
-name: Build
+name: RPM Build
+
+env:
+  version: ${{github.ref_name}}
+  release: 1
+  draft: true
 
 on:
   push:
