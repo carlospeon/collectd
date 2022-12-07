@@ -1,10 +1,14 @@
 name: RPM Build
-
 env:
   tag: ${{ github.ref_name }}
   draft: true
 
-on:
+env:
+  version: ${{github.ref_name}}
+  release: 1
+  draft: true
+
+on: 
   push:
     branches: [ main ]
   pull_request:
