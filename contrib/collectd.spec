@@ -159,7 +159,7 @@
 %define with_ubi 0%{!?_without_ubi:1}
 %define with_users 0%{!?_without_users:1}
 %define with_uuid 0%{!?_without_uuid:1}
-%define with_varnish 0%{!?_without_varnish:1}
+%define with_varnish 0%{!?_without_varnish:0}
 %define with_virt 0%{!?_without_virt:1}
 %define with_vmem 0%{!?_without_vmem:1}
 %define with_vserver 0%{!?_without_vserver:1}
@@ -197,9 +197,12 @@
 
 # Plugins not buildable on RHEL 9
 %if 0%{?rhel} && 0%{?rhel} == 9
+%define with_amqp1 0
+%define with_dbi 0
 %define with_iptables 0
 %define with_perl 0
 %define with_modbus 0
+%define with_notify_dbi 0
 %endif
 
 Summary:        Statistics collection and monitoring daemon
@@ -3218,5 +3221,5 @@ fi
 %doc contrib/
 
 %changelog
-* Tue Dec 6 2022 Carlos Peon <carlospeon@gmail.com> - 5.12.0.itx.6-1
+* Tue Dec 6 2022 Carlos Peon <carlospeon@gmail.com> - 5.12.0.6-1
 - Initial version
