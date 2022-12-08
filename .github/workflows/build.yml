@@ -26,7 +26,7 @@ jobs:
       id: buildrpm7
       uses: carlospeon/buildrpm@centos7
       with:
-        spec: contrib/collectd.spec
+        spec: contrib/redhat/collectd.spec
         version: ${{ steps.version.outputs.version }}
 
     - name: zip rpms
@@ -43,7 +43,7 @@ jobs:
       id: buildrpm8
       uses: carlospeon/buildrpm@rocky8
       with:
-        spec: contrib/collectd.spec
+        spec: contrib/redhat/collectd.spec
         version: ${{ steps.version.outputs.version }}
 
     - name: zip rpms
@@ -60,7 +60,7 @@ jobs:
       id: buildrpm9
       uses: carlospeon/buildrpm@rocky9
       with:
-        spec: contrib/collectd.spec
+        spec: contrib/redhat/collectd.spec
         version: ${{ steps.version.outputs.version }}
 
     - name: zip rpms
