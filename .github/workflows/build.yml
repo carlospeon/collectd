@@ -1,8 +1,7 @@
 name: RPM Build
 
 env:
-  version: ${{github.ref_name}}
-  release: 1
+  tag: ${{ github.ref_name }}
   draft: true
 
 on:
