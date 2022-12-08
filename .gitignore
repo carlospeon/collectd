@@ -107,5 +107,5 @@ test_*
 /collectd
 
 # pkg
-/pkg
+/.rpmbuild
 /patches

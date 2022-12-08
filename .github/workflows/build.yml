@@ -1,8 +1,7 @@
 name: RPM Build
 
 env:
-  version: ${{github.ref_name}}
-  release: 1
+  tag: ${{ github.ref_name }}
   draft: true
 
 on:
@@ -14,6 +13,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+    - name: get version
+      id: version
+      run: |
+        version=$(echo ${{ env.tag }} | cut -d - -f 2)
+        echo "version=${version}" >> $GITHUB_OUTPUT
+
     - name: checkout
       uses: actions/checkout@v3
 
@@ -22,17 +27,16 @@ jobs:
       uses: carlospeon/buildrpm@centos7
       with:
         spec: contrib/collectd.spec
-        version: ${{ env.version }}
-        release: ${{ env.release }}
+        version: ${{ steps.version.outputs.version }}
 
     - name: zip rpms
       run: |
         zip --junk-paths \
-          collectd-${{ env.version }}-${{ env.release }}-el7-rpms.zip \
+          collectd-${{ steps.version.outputs.version }}-el7-x86_64-rpms.zip \
           ${{ steps.buildrpm7.outputs.rpms_path }}/x86_64/*.el7.x86_64.rpm \
           -x "*-debuginfo-*"
         zip --junk-paths \
-          collectd-${{ env.version }}-${{ env.release }}-el7-rpms-debuginfo.zip \
+          collectd-${{ steps.version.outputs.version }}-el7-x86_64-rpms-debuginfo.zip \
           ${{ steps.buildrpm7.outputs.rpms_path }}/x86_64/*-debuginfo-*.el7.x86_64.rpm
 
     - name: build RPM package
@@ -40,17 +44,16 @@ jobs:
       uses: carlospeon/buildrpm@rocky8
       with:
         spec: contrib/collectd.spec
-        version: ${{ env.version }}
-        release: ${{ env.release }}
+        version: ${{ steps.version.outputs.version }}
 
     - name: zip rpms
       run: |
         zip --junk-paths \
-          collectd-${{ env.version }}-${{ env.release }}-el8-rpms.zip \
+          collectd-${{ steps.version.outputs.version }}-el8-x86_64-rpms.zip \
           ${{ steps.buildrpm8.outputs.rpms_path }}/x86_64/*.el8.x86_64.rpm \
           -x "*-debuginfo-*"
         zip --junk-paths \
-          collectd-${{ env.version }}-${{ env.release }}-el8-rpms-debuginfo.zip \
+          collectd-${{ steps.version.outputs.version }}-el8-x86_64-rpms-debuginfo.zip \
           ${{ steps.buildrpm8.outputs.rpms_path }}/x86_64/*-debuginfo-*.el8.x86_64.rpm
 
     - name: build RPM package
@@ -58,23 +61,22 @@ jobs:
       uses: carlospeon/buildrpm@rocky9
       with:
         spec: contrib/collectd.spec
-        version: ${{ env.version }}
-        release: ${{ env.release }}
+        version: ${{ steps.version.outputs.version }}
 
     - name: zip rpms
       run: |
         zip --junk-paths \
-          collectd-${{ env.version }}-${{ env.release }}-el9-rpms.zip \
+          collectd-${{ steps.version.outputs.version }}-el9-x86_64-rpms.zip \
           ${{ steps.buildrpm9.outputs.rpms_path }}/x86_64/*.el9.x86_64.rpm \
           -x "*-debuginfo-*"
         zip --junk-paths \
-          collectd-${{ env.version }}-${{ env.release }}-el9-rpms-debuginfo.zip \
+          collectd-${{ steps.version.outputs.version }}-el9-x86_64-rpms-debuginfo.zip \
           ${{ steps.buildrpm9.outputs.rpms_path }}/x86_64/*-debuginfo-*.el9.x86_64.rpm
 
     - uses: ncipollo/release-action@v1
       with:
-        name: collectd-${{ env.version }}
-        artifacts: "collectd-${{ env.version }}-${{ env.release }}-*-rpms*.zip"
+        name: collectd-${{ steps.version.outputs.version }}
+        artifacts: "collectd-${{ steps.version.outputs.version }}-*-x86_64-rpms*.zip"
         artifactContentType: application/zip
         replacesArtifacts: true
         allowUpdates: true
