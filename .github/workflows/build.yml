@@ -4,10 +4,10 @@ env:
   tag: ${{ github.ref_name }}
   draft: true
 
-on:
+on: 
   push:
     tags:
-    - '*'
+    - 'collectd-*'
 
 jobs:
   build:
