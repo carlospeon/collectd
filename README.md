@@ -12,6 +12,7 @@ Submitted to upstream:
 [x] plugin.c: fix drop probability
 [x] Allow Alertmanager correlation and resolve, fix meta names with ':'
 [ ] evaluate flush condition with oldest value in the buffer
+[ ] network.c: check notification metadata to avoid loops
 
  collectd - System information collection daemon
 =================================================
