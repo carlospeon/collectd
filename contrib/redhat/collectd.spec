@@ -237,6 +237,7 @@
 # Plugins not buildable on RHEL 8
 %if 0%{?rhel} && 0%{?rhel} == 8
 %define with_modbus 0
+%define with_nut 0
 %endif
 
 # Plugins not buildable on RHEL 9
@@ -247,6 +248,7 @@
 %define with_perl 0
 %define with_modbus 0
 %define with_notify_dbi 0
+%define with_nut 0
 %endif
 
 Summary:        Statistics collection and monitoring daemon
