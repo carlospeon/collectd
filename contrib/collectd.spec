@@ -1,46 +1,3 @@
-#
-# q: What is this ?
-# a: A specfile for building RPM packages of current collectd releases, for
-#    RHEL/CentOS versions 5, 6 and 7. By default all the plugins which are
-#    buildable based on the libraries available in the distribution + the
-#    EPEL repository, will be built. Plugins depending on external libs will
-#    be packaged in separate RPMs.
-#
-# q: And how can I do that ?
-# a: By following these instructions, using mock:
-#
-# - install and configure mock (https://fedoraproject.org/wiki/Projects/Mock)
-#
-# - enable the EPEL repository (http://dl.fedoraproject.org/pub/epel/) in the
-#   configuration files for your target systems (/etc/mock/*.cfg).
-#   If there's a +epel configuration (e.g. centos+epel-7-x86_64.cfg)
-#   you can use that instead.
-#
-# - fetch the desired collectd release file from https://collectd.org/files/
-#   and save it in your ~/rpmbuild/SOURCES/ directory (or build your own out of
-#   the git repository: ./build.sh && ./configure && make dist)
-#
-# - copy this file in your ~/rpmbuild/SPECS/ directory. Make sure the
-#   "Version:" tag matches the version from the tarball.
-#   If it doesn't, check the development repository, since more
-#   changes to this specfile than just bumping the Version tag may
-#   be necessary, and such changes may have been merged after the
-#   corresponding collectd release was made.
-#
-# - build the SRPM first:
-#   mock -r centos-6-x86_64 --buildsrpm --spec ~/rpmbuild/SPECS/collectd.spec \
-#     --sources ~/rpmbuild/SOURCES/
-#
-# - then build the RPMs:
-#   mock -r centos-6-x86_64 --no-clean --rebuild \
-#     /var/lib/mock/centos-6-x86_64/result/collectd-X.Y.Z-NN.src.rpm
-#
-# - you can also optionally enable/disable plugins which are disabled/enabled
-#   by default:
-#   mock -r centos-6-x86_64 --no-clean --without=java --with=oracle --rebuild \
-#     /var/lib/mock/centos-6-x86_64/result/collectd-X.Y.Z-NN.src.rpm
-#
-
 %global _default_patch_fuzz 2
 
 %global _hardened_build 1
@@ -90,13 +47,11 @@
 %define with_drbd 0%{!?_without_drbd:1}
 %define with_email 0%{!?_without_email:1}
 %define with_entropy 0%{!?_without_entropy:1}
-%define with_epics 0%{!?_without_epics:0}
 %define with_ethstat 0%{!?_without_ethstat:1}
 %define with_exec 0%{!?_without_exec:1}
 %define with_fhcount 0%{!?_without_fhcount:1}
 %define with_filecount 0%{!?_without_filecount:1}
 %define with_fscache 0%{!?_without_fscache:1}
-%define with_ganglia 0%{!?_without_ganglia:1}
 %define with_gmond 0%{!?_without_gmond:0}
 %define with_gps 0%{!?_without_gps:1}
 %define with_gpu_nvidia 0%{!?_without_gpu_nvidia:0}
@@ -133,7 +88,7 @@
 %define with_mic 0%{!?_without_mic:0}
 %define with_mmc 0%{!?_without_mmc:1}
 %define with_modbus 0%{!?_without_modbus:1}
-%define with_mongodb 0%{!?_without_mongodb:0}
+%define with_mongodb 0%{!?_without_mongodb:1}
 %define with_mqtt 0%{!?_without_mqtt:1}
 %define with_multimeter 0%{!?_without_multimeter:1}
 %define with_mysql 0%{!?_without_mysql:1}
@@ -216,7 +171,7 @@
 %define with_write_influxdb_udp 0%{!?_without_write_influxdb_udp:1}
 %define with_write_kafka 0%{!?_without_write_kafka:1}
 %define with_write_log 0%{!?_without_write_log:1}
-%define with_write_mongodb 0%{!?_without_write_mongodb:0}
+%define with_write_mongodb 0%{!?_without_write_mongodb:1}
 %define with_write_prometheus 0%{!?_without_write_prometheus:1}
 %define with_write_redis 0%{!?_without_write_redis:1}
 %define with_write_riemann 0%{!?_without_write_riemann:1}
@@ -253,7 +208,7 @@
 Summary:        Statistics collection and monitoring daemon
 Name:           collectd
 Version:        %{?version}
-Release:        1%{?dist}
+Release:        %{?release}%{?dist}
 URL:            https://collectd.org
 Source0:        %{name}-%{version}.tar.gz
 License:        GPLv2
@@ -268,12 +223,15 @@ BuildRequires:      xfsprogs-devel
 %{?systemd_requires}
 BuildRequires:      systemd
 BuildRequires:      libudev-devel
-Requires:	        collectd-selinux
+Requires:	          collectd-selinux
 %else
 Requires(post):     chkconfig
 Requires(preun):    chkconfig, initscripts
 Requires(postun):   initscripts
 %endif
+
+#Source1: clean.sh
+#Source2: build.sh
 
 %description
 collectd is a small daemon which collects system information periodically and
@@ -538,11 +496,7 @@ using the Intelligent Platform Management Interface (IPMI).
 Summary:	IPtables plugin for collectd
 Group:		System Environment/Daemons
 Requires:	%{name}%{?_isa} = %{version}-%{release}
-%if 0%{?fedora} || 0%{?rhel} >= 9
-BuildRequires:	iptables-legacy-devel
-%else
 BuildRequires:	iptables-devel
-%endif
 %description iptables
 The IPtables plugin can gather statistics from your ip_tables based packet
 filter (aka. firewall) for both the IPv4 and the IPv6 protocol. It can collect
@@ -623,19 +577,6 @@ Requires:	%{name}%{?_isa} = %{version}-%{release}
 %description mic
 The mic plugin collects CPU usage, memory usage, temperatures and power
 consumption from Intel Many Integrated Core (MIC) CPUs.
-%endif
-
-%if %{with_mmc}
-%package mmc
-Summary:       MMC plugin for collectd
-Group:         System Environment/Daemons
-Requires:      %{name}%{?_isa} = %{version}-%{release}
-BuildRequires:	systemd-devel
-%description mmc
-Reads the life time estimates reported by eMMC 5.0+ devices and some more
-detailed health metrics, like bad block and erase counts or power cycles,
-for Micron and SanDisk eMMCs and some Swissbit MMC cards (MANFID=0x5D
-OEMID=0x5342).
 %endif
 
 %if %{with_modbus}
@@ -821,7 +762,6 @@ Requires:	perl(:MODULE_COMPAT_%(eval "`%{__perl} -V:version`"; echo $version))
 BuildRequires:	perl
     %else
 BuildRequires:	perl-ExtUtils-Embed
-BuildRequires:	perl-macros
     %endif
 %description perl
 The Perl plugin embeds a Perl interpreter into collectd and exposes the
@@ -899,16 +839,6 @@ BuildRequires: python-devel
 %description python
 The Python plugin embeds a Python interpreter into collectd and exposes the
 application programming interface (API) to Python-scripts.
-%endif
-
-%if %{with_ras}
-%package ras
-Summary:	RAS plugin for collectd
-Group:		System Environment/Daemons
-Requires:	%{name}%{?_isa} = %{version}-%{release}
-BuildRequires:	sqlite-devel
-%description ras
-The RAS plugin gathers and counts errors provided by RASDaemon.
 %endif
 
 %if %{with_redis}
@@ -1452,12 +1382,6 @@ Collectd utilities
 %define _with_entropy --disable-entropy
 %endif
 
-%if %{with_epics}
-%define _with_entropy --enable-epics
-%else
-%define _with_entropy --disable-epics
-%endif
-
 %if %{with_ethstat}
 %define _with_ethstat --enable-ethstat
 %else
@@ -1486,12 +1410,6 @@ Collectd utilities
 %define _with_fscache --enable-fscache
 %else
 %define _with_fscache --disable-fscache
-%endif
-
-%if %{with_ganglia}
-%define _with_ganglia --enable-ganglia
-%else
-%define _with_ganglia --disable-ganglia
 %endif
 
 %if %{with_gmond}
@@ -1927,21 +1845,14 @@ Collectd utilities
 %endif
 
 %if %{with_python}
+    %if 0%{?rhel} && 0%{?rhel} < 6
+%define _with_python --enable-python --with-python=%{_bindir}/python2.6
+%define _python_config PYTHON_CONFIG="%{_bindir}/python2.6-config"
+    %else
 %define _with_python --enable-python
+    %endif
 %else
 %define _with_python --disable-python
-%endif
-
-%if %{with_ras}
-%define _with_ras --enable-ras
-%else
-%define _with_ras --disable-ras
-%endif
-
-%if %{with_redfish}
-%define _with_redfish --enable-redfish
-%else
-%define _with_redfish --disable-redfish
 %endif
 
 %if %{with_ras}
@@ -1954,6 +1865,12 @@ Collectd utilities
 %define _with_redis --enable-redis
 %else
 %define _with_redis --disable-redis
+%endif
+
+%if %{with_redfish}
+%define _with_redfish --enable-redfish
+%else
+%define _with_redfish --disable-redfish
 %endif
 
 %if %{with_routeros}
@@ -2292,6 +2209,9 @@ Collectd utilities
 %define _feature_debug --disable-debug
 %endif
 
+#%{SOURCE1}
+#%{SOURCE2}
+
 ./build.sh
 %configure CFLAGS="%{optflags} -I/usr/include/libredfish -DLT_LAZY_OR_NOW=\"RTLD_LAZY|RTLD_GLOBAL\"" \
     %{?_python_config} \
@@ -2348,7 +2268,6 @@ Collectd utilities
     %{?_with_dpdk_telemetry} \
     %{?_with_email} \
     %{?_with_entropy} \
-    %{?_with_epics} \
     %{?_with_ethstat} \
     %{?_with_exec} \
     %{?_with_fhcount} \
@@ -2360,14 +2279,14 @@ Collectd utilities
     %{?_with_hba} \
     %{?_with_hddtemp} \
     %{?_with_hugepages} \
-    %{?_with_infiniband} \
     %{?_with_intel_pmu} \
     %{?_with_intel_rdt} \
     %{?_with_interface} \
+    %{?_with_infiniband} \
     %{?_with_ipc} \
     %{?_with_ipmi} \
-    %{?_with_ipstats} \
     %{?_with_iptables} \
+    %{?_with_ipstats} \
     %{?_with_ipvs} \
     %{?_with_irq} \
     %{?_with_java} \
@@ -2427,18 +2346,18 @@ Collectd utilities
     %{?_with_protocols} \
     %{?_with_python} \
     %{?_with_ras} \
-    %{?_with_redfish} \
     %{?_with_redis} \
+    %{?_with_redfish} \
     %{?_with_routeros} \
     %{?_with_rrdcached} \
     %{?_with_rrdtool} \
     %{?_with_sensors} \
     %{?_with_serial} \
     %{?_with_sigrok} \
-    %{?_with_slurm} \
     %{?_with_smart} \
     %{?_with_snmp} \
     %{?_with_snmp_agent} \
+    %{?_with_slurm} \
     %{?_with_statsd} \
     %{?_with_swap} \
     %{?_with_synproxy} \
@@ -2486,6 +2405,7 @@ Collectd utilities
     %{?_with_zfs_arc} \
     %{?_with_zone} \
     %{?_with_zookeeper}
+
 
 %{__make} %{?_smp_mflags}
 
@@ -2586,7 +2506,7 @@ fi
 
 
 %files
-%doc AUTHORS COPYING ChangeLog README.md
+%doc AUTHORS COPYING ChangeLog README
 %config(noreplace) %{_sysconfdir}/collectd.conf
 %if 0%{?fedora} || 0%{?rhel} >= 7
 %{_unitdir}/collectd.service
@@ -2840,9 +2760,6 @@ fi
 %if %{with_write_influxdb_udp}
 %{_libdir}/%{name}/write_influxdb_udp.so
 %endif
-%if %{with_write_log}
-%{_libdir}/%{name}/write_log.so
-%endif
 %if %{with_write_syslog}
 %{_libdir}/%{name}/write_syslog.so
 %endif
@@ -3055,11 +2972,6 @@ fi
 %{_libdir}/%{name}/mic.so
 %endif
 
-%if %{with_mmc}
-%files mmc
-%{_libdir}/%{name}/mmc.so
-%endif
-
 %if %{with_modbus}
 %files modbus
 %{_libdir}/%{name}/modbus.so
@@ -3179,11 +3091,6 @@ fi
 %files python
 %{_mandir}/man5/collectd-python*
 %{_libdir}/%{name}/python.so
-%endif
-
-%if %{with_ras}
-%files ras
-%{_libdir}/%{name}/ras.so
 %endif
 
 %if %{with_redis}
@@ -3314,309 +3221,5 @@ fi
 %doc contrib/
 
 %changelog
-* Tue Dec 06 2022 Carlos Peon <carlospeon@gmail.com> - 5.12.0.6-1
-- add rhel9, remove rhel6
-
-* Thu Sep 08 2022 Laura Hild <lsh@jlab.org> - 5.12.0-2
-- require systemd-devel (libudev.h) to build the SMART plugin
-
-* Wed May 05 2021 Fabien Wernli <rpmbuild@faxmodem.org> - 5.12.0-1
-- Update to 5.12.0
-- Remove netstat_udp
-- Add infiniband and mdevents
-
-* Mon Mar 16 2020 Matthias Runge <mrunge@redhat.com> - 5.11.0-1
-- update to 5.11.0
-
-* Fri Oct 18 2019 Matthias Runge <mrunge@redhat.com> - 5.10.0-1
-- update to 5.10.0
-
-* Mon Oct 14 2019 Ruben Kerkhof <ruben@rubenkerkhof.com> - 5.9.2-2
-- Remove lvm plugin, liblvmapp has been deprecated upstream
-
-* Fri Jun 14 2019 Fabien Wernli <rpmbuild@faxmodem.org> - 5.9.0-1
-- add code for write_stackdriver (disabled for now)
-- add code for gpu_nvidia (disabled for now)
-- add pcie_errors
-
-* Thu Sep 28 2017 Jakub Jankowski <shasta@toxcorp.com> - 5.7.1-9
-- Fix mbmon/mcelog build options
-
-* Thu Sep 28 2017 xakru <calvinxakru@gmail.com> - 5.7.1-8
-- Add new libcollectdclient/network_parse
-- Add new libcollectdclient/server
-- Add new libcollectdclient/types
-- Add new synproxy plugin
-
-* Fri Aug 18 2017 Ruben Kerkhof <ruben@rubenkerkhof.com> - 5.7.1-7
-- Add new intel_pmu plugin
-
-* Sun Mar 05 2017 Ruben Kerkhof <ruben@rubenkerkhof.com> - 5.7.1-6
-- Move recently added plugins to subpackages
-
-* Sun Mar 05 2017 Ruben Kerkhof <ruben@rubenkerkhof.com> - 5.7.1-5
-- Add new ovs_stats plugin
-
-* Sun Mar 05 2017 Ruben Kerkhof <ruben@rubenkerkhof.com> - 5.7.1-4
-- Don't enable XFS support on RHEL6, it is missing for i386
-
-* Sun Mar 05 2017 Ruben Kerkhof <ruben@rubenkerkhof.com> - 5.7.1-3
-- Add dpdkevents plugin, disabled by default
-
-* Wed Feb 22 2017 Ruben Kerkhof <ruben@rubenkerkhof.com> - 5.7.1-2
-- Enable XFS support in df plugin
-- Fix bogus date in changelog
-
-* Sun Jan 01 2017 Marc Fournier <marc.fournier@camptocamp.com> - 5.7.1-1
-- New upstream version
-
-* Sat Dec 31 2016 Ruben Kerkhof <ruben@rubenkerkhof.com> - 5.7.0-4
-- Add new ovs_events plugin
-
-* Sat Dec 31 2016 Ruben Kerkhof <ruben@rubenkerkhof.com> - 5.7.0-3
-- Add new mcelog plugin
-
-* Tue Nov 29 2016 Ruben Kerkhof <ruben@rubenkerkhof.com> - 5.7.0-2
-- Disable redis plugin on RHEL 6, hiredis has been retired from EPEL6
-
-* Mon Oct 10 2016 Marc Fournier <marc.fournier@camptocamp.com> - 5.7.0-1
-- New PRE-RELEASE version
-- New plugins enabled by default: hugepages, write_prometheus
-- New plugins disabled by default: dpdkstat, intel_rdt
-
-* Mon Oct 10 2016 Victor Demonchy <v.demonchy@criteo.com> - 5.6.1-1
-- New upstream version
-
-* Sun Aug 14 2016 Ruben Kerkhof <ruben@rubenkerkhof.com> - 5.6.0-1
-- New upstream version
-- New plugins enabled by default: chrony, cpusleep, gps, lua, mqtt, notify_nagios
-- New plugins disabled by default: grpc, xencpu, zone
-
-* Tue Jul 26 2016 Ruben Kerkhof <ruben@rubenkerkhof.com> - 5.5.2-1
-- New upstream version
-- Contains fix for CVE-2016-6254
-- Change collectd.org url to https
-
-* Sat Jun 04 2016 Ruben Kerkhof <ruben@rubenkerkhof.com> 5.5.1-1
-- New upstream version
-
-* Wed May 27 2015 Marc Fournier <marc.fournier@camptocamp.com> 5.5.0-1
-- New upstream version
-- New plugins enabled by default: ceph, drbd, log_logstash, write_tsdb, smart,
-  openldap, redis, write_redis, zookeeper, write_log, write_sensu, ipc,
-  turbostat, fhcount
-- New plugins disabled by default: barometer, write_kafka
-- Enable zfs_arc, now supported on Linux
-- Install disk plugin in a dedicated package, as it depends on libudev
-- use systemd on EL7, sysvinit on EL6 & EL5
-- Install collectdctl, collectd-tg and collectd-nagios in collectd-utils.rpm
-- Add build-dependency on libcap-devel
-
-* Mon Aug 19 2013 Marc Fournier <marc.fournier@camptocamp.com> 5.4.2-1
-- New upstream version
-- Build netlink plugin by default
-- Enable cgroups, lvm and statsd plugins
-- Enable (but don't build by default) mic, aquaero and sigrok plugins
-- Enable modbus, memcachec and xmms plugins on RHEL7
-
-* Tue Aug 06 2013 Marc Fournier <marc.fournier@camptocamp.com> 5.3.1-1
-- New upstream version
-- Added RHEL5 support:
-  * conditionally disable plugins not building on this platform
-  * add/specify some build dependencies and options
-  * replace some RPM macros not available on this platform
-- Removed duplicate --enable-aggregation
-- Added some comments & usage examples
-- Replaced a couple of "Buildrequires" by "BuildRequires"
-- Enabled modbus plugin on RHEL6
-- Enabled netlink plugin on RHEL6 and RHEL7
-- Allow perl plugin to build on RHEL5
-- Add support for RHEL7
-- Misc perl-related improvements:
-  * prevent rpmbuild from extracting dependencies from files in /usr/share/doc
-  * don't package collection3 and php-collection twice
-  * keep perl scripts from contrib/ in collectd-contrib
-
-* Wed Apr 10 2013 Marc Fournier <marc.fournier@camptocamp.com> 5.3.0-1
-- New upstream version
-- Enabled write_riemann plugin
-- Enabled tail_csv plugin
-- Installed collectd-tc manpage
-
-* Fri Jan 11 2013 Marc Fournier <marc.fournier@camptocamp.com> 5.2.0-3
-- remove dependency on libstatgrab, which isn't required on linux
-
-* Thu Jan 03 2013 Marc Fournier <marc.fournier@camptocamp.com> 5.2.0-2
-- collection3 and php-collection viewers are now in separate packages
-
-* Fri Dec 21 2012 Marc Fournier <marc.fournier@camptocamp.com> 5.2.0-1
-- New upstream version
-- Enabled aggregation plugin
-- Installed collectd-tc
-- Added network.h and network_buffer.h to libcollectdclient-devel
-- Moved libxml2-devel and libcurl-devel BRs to relevant plugins sections
-- Moved libcollectdclient.so from libcollectdclient-devel to libcollectdclient
-- Added rrdcached and redis plugin descriptions
-- Mentioned new pf plugin in disabled plugins list
-
-* Sun Nov 18 2012 Ruben Kerkhof <ruben@tilaa.nl> 5.1.0-3
-- Follow Fedora Packaging Guidelines in java subpackage
-
-* Sat Nov 17 2012 Ruben Kerkhof <ruben@tilaa.nl> 5.1.0-2
-- Move perl stuff to perl_vendorlib
-- Replace hardcoded paths with macros
-- Remove unnecessary Requires
-- Removed .a and .la files
-- Some other small cleanups
-
-* Fri Nov 16 2012 Marc Fournier <marc.fournier@camptocamp.com> 5.1.0-1
-- New upstream version
-- Changes to support 5.1.0
-- Enabled all buildable plugins based on libraries available on EL6 + EPEL
-- All plugins requiring external libraries are now shipped in separate
-  packages.
-- No longer treat Java plugin as an exception, correctly set $JAVA_HOME during
-  the build process + ensure build deps are installed.
-- Dropped per-plugin configuration files, as they tend to diverge from upstream
-  defaults.
-- Moved perl stuff to /usr/share/perl5/
-- Don't alter Interval and ReadThreads by default, let the user change this
-  himself.
-- Initscript improvements:
-  * checks configuration before (re)starting, based on debian's initscript
-  * use /etc/sysconfig instdead of /etc/default
-  * include optional $ARGS in arguments passed to collectd.
-- Drop collection.cgi from main package, as it's been obsoleted by collection3
-- Moved contrib/ to its own package, to avoid cluttering the main package with
-  non-essential stuff.
-- Replaced BuildPrereq by BuildRequires
-
-* Mon Jan 03 2011 Monetate <jason.stelzer@monetate.com> 5.0.1
-- New upstream version
-- Changes to support 5.0.1
-
-* Mon Jan 04 2010 Rackspace <stu.hood@rackspace.com> 4.9.0
-- New upstream version
-- Changes to support 4.9.0
-- Added support for Java/GenericJMX plugin
-
-* Mon Mar 17 2008 RightScale <support@rightscale.com> 4.3.1
-- New upstream version
-- Changes to support 4.3.1
-- Added More Prereqs to support more plugins
-- Added support for perl plugin
-
-* Mon Aug 06 2007 Kjell Randa <Kjell.Randa@broadpark.no> 4.0.6
-- New upstream version
-
-* Wed Jul 25 2007 Kjell Randa <Kjell.Randa@broadpark.no> 4.0.5
-- New major releas
-- Changes to support 4.0.5
-
-* Thu Jan 11 2007 Iain Lea <iain@bricbrac.de> 3.11.0-0
-- fixed spec file to build correctly on fedora core
-- added improved init.d script to work with chkconfig
-- added %%post and %%postun to call chkconfig automatically
-
-* Sun Jul 09 2006 Florian octo Forster <octo@verplant.org> 3.10.0-1
-- New upstream version
-
-* Sun Jun 25 2006 Florian octo Forster <octo@verplant.org> 3.9.4-1
-- New upstream version
-
-* Thu Jun 01 2006 Florian octo Forster <octo@verplant.org> 3.9.3-1
-- New upstream version
-
-* Tue May 09 2006 Florian octo Forster <octo@verplant.org> 3.9.2-1
-- New upstream version
-
-* Tue May 09 2006 Florian octo Forster <octo@verplant.org> 3.8.5-1
-- New upstream version
-
-* Fri Apr 21 2006 Florian octo Forster <octo@verplant.org> 3.9.1-1
-- New upstream version
-
-* Fri Apr 14 2006 Florian octo Forster <octo@verplant.org> 3.9.0-1
-- New upstream version
-- Added the `apache' package.
-
-* Tue Mar 14 2006 Florian octo Forster <octo@verplant.org> 3.8.2-1
-- New upstream version
-
-* Mon Mar 13 2006 Florian octo Forster <octo@verplant.org> 3.8.1-1
-- New upstream version
-
-* Thu Mar 09 2006 Florian octo Forster <octo@verplant.org> 3.8.0-1
-- New upstream version
-
-* Sat Feb 18 2006 Florian octo Forster <octo@verplant.org> 3.7.2-1
-- Include `tape.so' so the build doesn't terminate because of missing files..
-- New upstream version
-
-* Sat Feb 04 2006 Florian octo Forster <octo@verplant.org> 3.7.1-1
-- New upstream version
-
-* Mon Jan 30 2006 Florian octo Forster <octo@verplant.org> 3.7.0-1
-- New upstream version
-- Removed the extra `hddtemp' package
-
-* Tue Jan 24 2006 Florian octo Forster <octo@verplant.org> 3.6.2-1
-- New upstream version
-
-* Fri Jan 20 2006 Florian octo Forster <octo@verplant.org> 3.6.1-1
-- New upstream version
-
-* Fri Jan 20 2006 Florian octo Forster <octo@verplant.org> 3.6.0-1
-- New upstream version
-- Added config file, `collectd.conf(5)', `df.so'
-- Added package `collectd-mysql', dependency on `mysqlclient10 | mysql'
-
-* Wed Dec 07 2005 Florian octo Forster <octo@verplant.org> 3.5.0-1
-- New upstream version
-
-* Sat Nov 26 2005 Florian octo Forster <octo@verplant.org> 3.4.0-1
-- New upstream version
-
-* Sat Nov 05 2005 Florian octo Forster <octo@verplant.org> 3.3.0-1
-- New upstream version
-
-* Wed Oct 26 2005 Florian octo Forster <octo@verplant.org> 3.2.0-1
-- New upstream version
-- Added statement to remove the `*.la' files. This fixes a problem when
-  `Unpackaged files terminate build' is in effect.
-- Added `processes.so*' to the main package
-
-* Fri Oct 14 2005 Florian octo Forster <octo@verplant.org> 3.1.0-1
-- New upstream version
-- Added package `collectd-hddtemp'
-
-* Fri Sep 30 2005 Florian octo Forster <octo@verplant.org> 3.0.0-1
-- New upstream version
-- Split the package into `collectd' and `collectd-sensors'
-
-* Fri Sep 16 2005 Florian octo Forster <octo@verplant.org> 2.1.0-1
-- New upstream version
-
-* Sat Sep 10 2005 Florian octo Forster <octo@verplant.org> 2.0.0-1
-- New upstream version
-
-* Mon Aug 29 2005 Florian octo Forster <octo@verplant.org> 1.8.0-1
-- New upstream version
-
-* Thu Aug 25 2005 Florian octo Forster <octo@verplant.org> 1.7.0-1
-- New upstream version
-
-* Sun Aug 21 2005 Florian octo Forster <octo@verplant.org> 1.6.0-1
-- New upstream version
-
-* Sun Jul 17 2005 Florian octo Forster <octo@verplant.org> 1.5.1-1
-- New upstream version
-
-* Sun Jul 17 2005 Florian octo Forster <octo@verplant.org> 1.5-1
-- New upstream version
-
-* Mon Jul 11 2005 Florian octo Forster <octo@verplant.org> 1.4.2-1
-- New upstream version
-
-* Sat Jul 09 2005 Florian octo Forster <octo@verplant.org> 1.4-1
-- Built on RedHat 7.3
+* Tue Dec 6 2022 Carlos Peon <carlospeon@gmail.com> - 5.12.0.6-1
+- Initial version

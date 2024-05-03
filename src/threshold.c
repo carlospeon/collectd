@@ -294,7 +294,7 @@ static int ut_report_state(const data_set_t *ds, const value_list_t *vl,
       uc_set_hits(ds, vl, 0); /* reset hit counter and notify */
     } else {
       DEBUG("ut_report_state: th->hits = %d, uc_get_hits = %d", th->hits,
-            uc_get_hits(ds, vl));
+            uc_get_hits(vl));
       (void)uc_inc_hits(ds, vl, 1); /* increase hit counter */
       return 0;
     }

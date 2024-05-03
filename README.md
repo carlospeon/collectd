@@ -25,6 +25,19 @@ About
   and provides mechanisms to store and monitor the values in a variety of
   ways.
 
+- [collectd - System information collection daemon](#collectd---system-information-collection-daemon)
+  - [About](#about)
+  - [Features](#features)
+  - [Operation](#operation)
+  - [collectd and chkrootkit](#collectd-and-chkrootkit)
+  - [Prerequisites](#prerequisites)
+  - [Configuring / Compiling / Installing](#configuring--compiling--installing)
+  - [Generating the configure script](#generating-the-configure-script)
+  - [Building on Windows](#building-on-windows)
+  - [Crosscompiling](#crosscompiling)
+  - [Contact](#contact)
+  - [Author](#author)
+
 
 Features
 --------
@@ -135,7 +148,7 @@ Features
 
     - dpdk_telemetry
       Collect DPDK interface, application and global statistics.
-      This plugin can be used as substitute to dpdkstat plugin.
+      This plugin can be used as a substitute to dpdkstat plugin.
 
       This plugin is dependent on DPDK 19.08 release and must be used
       along with the DPDK application.
@@ -151,6 +164,10 @@ Features
 
     - entropy
       Amount of entropy available to the system.
+
+    - epics
+      Collect data from EPICS message bus.
+      <https://epics-controls.org>
 
     - ethstat
       Network interface card statistics.

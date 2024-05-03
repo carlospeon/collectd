@@ -495,8 +495,17 @@ static int network_enqueue_values(value_list_t *vl, /* {{{ */
 
   if (address != NULL) {
     char host[48];
-    status = getnameinfo((struct sockaddr *)address,
-                         sizeof(struct sockaddr_storage), host, sizeof(host),
+    size_t len = sizeof(struct sockaddr_storage);
+
+#ifdef __NetBSD__
+    if (address->ss_family == AF_INET) {
+      len = sizeof(struct sockaddr_in);
+    } else if (address->ss_family == AF_INET6) {
+      len = sizeof(struct sockaddr_in6);
+    }
+#endif
+
+    status = getnameinfo((struct sockaddr *)address, len, host, sizeof(host),
                          NULL, 0, NI_NUMERICHOST | NI_NUMERICSERV);
     if (status != 0) {
       ERROR("network plugin: getnameinfo failed: %s", gai_strerror(status));
@@ -3078,11 +3087,11 @@ static int network_config_add_listen(const oconfig_item_t *ci) /* {{{ */
       network_config_set_security_level(child, &se->data.server.security_level);
     else
 #endif /* HAVE_GCRYPT_H */
-        if (strcasecmp("Interface", child->key) == 0)
-      network_config_set_interface(child, &se->interface);
-    else {
-      WARNING("network plugin: Option `%s' is not allowed here.", child->key);
-    }
+      if (strcasecmp("Interface", child->key) == 0)
+        network_config_set_interface(child, &se->interface);
+      else {
+        WARNING("network plugin: Option `%s' is not allowed here.", child->key);
+      }
   }
 
 #if HAVE_GCRYPT_H
@@ -3158,15 +3167,15 @@ static int network_config_add_server(const oconfig_item_t *ci) /* {{{ */
       network_config_set_security_level(child, &se->data.client.security_level);
     else
 #endif /* HAVE_GCRYPT_H */
-        if (strcasecmp("Interface", child->key) == 0)
-      network_config_set_interface(child, &se->interface);
-    else if (strcasecmp("BindAddress", child->key) == 0)
-      network_config_set_bind_address(child, &se->data.client.bind_addr);
-    else if (strcasecmp("ResolveInterval", child->key) == 0)
-      cf_util_get_cdtime(child, &se->data.client.resolve_interval);
-    else {
-      WARNING("network plugin: Option `%s' is not allowed here.", child->key);
-    }
+      if (strcasecmp("Interface", child->key) == 0)
+        network_config_set_interface(child, &se->interface);
+      else if (strcasecmp("BindAddress", child->key) == 0)
+        network_config_set_bind_address(child, &se->data.client.bind_addr);
+      else if (strcasecmp("ResolveInterval", child->key) == 0)
+        cf_util_get_cdtime(child, &se->data.client.resolve_interval);
+      else {
+        WARNING("network plugin: Option `%s' is not allowed here.", child->key);
+      }
   }
 
 #if HAVE_GCRYPT_H
