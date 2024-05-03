@@ -708,7 +708,7 @@ int uc_get_names(char ***ret_names, cdtime_t **ret_times, size_t *ret_number) {
   return 0;
 } /* int uc_get_names */
 
-int uc_get_state(const value_list_t *vl) {
+int uc_get_state(const data_set_t *ds, const value_list_t *vl) {
   char name[6 * DATA_MAX_NAME_LEN];
   cache_entry_t *ce = NULL;
   int ret = STATE_ERROR;
@@ -732,7 +732,7 @@ int uc_get_state(const value_list_t *vl) {
   return ret;
 } /* int uc_get_state */
 
-int uc_set_state(const value_list_t *vl, int state) {
+int uc_set_state(const data_set_t *ds, const value_list_t *vl, int state) {
   char name[6 * DATA_MAX_NAME_LEN];
   cache_entry_t *ce = NULL;
   int ret = -1;
@@ -855,7 +855,7 @@ int uc_get_hits(const data_set_t *ds, const value_list_t *vl) {
   return ret;
 } /* int uc_get_hits */
 
-int uc_set_hits(const value_list_t *vl, int hits) {
+int uc_set_hits(const data_set_t *ds, const value_list_t *vl, int hits) {
   char name[6 * DATA_MAX_NAME_LEN];
   cache_entry_t *ce = NULL;
   int ret = -1;
@@ -880,7 +880,7 @@ int uc_set_hits(const value_list_t *vl, int hits) {
   return ret;
 } /* int uc_set_hits */
 
-int uc_inc_hits(const value_list_t *vl, int step) {
+int uc_inc_hits(const data_set_t *ds, const value_list_t *vl, int step) {
   char name[6 * DATA_MAX_NAME_LEN];
   cache_entry_t *ce = NULL;
   int ret = -1;

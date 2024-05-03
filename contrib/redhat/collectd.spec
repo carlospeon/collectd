@@ -129,6 +129,7 @@
 %define with_memcachec 0%{!?_without_memcachec:1}
 %define with_memcached 0%{!?_without_memcached:1}
 %define with_memory 0%{!?_without_memory:1}
+%define with_mic 0%{!?_without_mic:1}
 %define with_mmc 0%{!?_without_mmc:1}
 %define with_modbus 0%{!?_without_modbus:1}
 %define with_mongodb 0%{!?_without_mongodb:1}
@@ -820,6 +821,7 @@ BuildRequires:	perl
     %else
 BuildRequires:	perl-ExtUtils-Embed
 BuildRequires:	perl-macros
+    %endif
 %description perl
 The Perl plugin embeds a Perl interpreter into collectd and exposes the
 application programming interface (API) to Perl-scripts.

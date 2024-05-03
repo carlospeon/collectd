@@ -30,6 +30,7 @@
 #include "utils/common/common.h"
 
 #if HAVE_VARNISH_V4 || HAVE_VARNISH_V5
+#include <vdef.h>
 #include <vapi/vsc.h>
 #include <vapi/vsm.h>
 typedef struct VSC_C_main c_varnish_stats_t;
