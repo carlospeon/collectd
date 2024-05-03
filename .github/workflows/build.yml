@@ -22,22 +22,22 @@ jobs:
     - name: checkout
       uses: actions/checkout@v3
 
-    - name: build RPM package
-      id: buildrpm7
-      uses: carlospeon/buildrpm@centos7
-      with:
-        spec: contrib/redhat/collectd.spec
-        version: ${{ steps.version.outputs.version }}
+        #    - name: build RPM package
+        #      id: buildrpm7
+        #      uses: carlospeon/buildrpm@centos7
+        #      with:
+        #        spec: contrib/redhat/collectd.spec
+        #        version: ${{ steps.version.outputs.version }}
 
-    - name: zip rpms
-      run: |
-        zip --junk-paths \
-          collectd-${{ steps.version.outputs.version }}-el7-x86_64-rpms.zip \
-          ${{ steps.buildrpm7.outputs.rpms_path }}/x86_64/*.el7.x86_64.rpm \
-          -x "*-debuginfo-*"
-        zip --junk-paths \
-          collectd-${{ steps.version.outputs.version }}-el7-x86_64-rpms-debuginfo.zip \
-          ${{ steps.buildrpm7.outputs.rpms_path }}/x86_64/*-debuginfo-*.el7.x86_64.rpm
+        #    - name: zip rpms
+        #      run: |
+        #        zip --junk-paths \
+        #          collectd-${{ steps.version.outputs.version }}-el7-x86_64-rpms.zip \
+        #          ${{ steps.buildrpm7.outputs.rpms_path }}/x86_64/*.el7.x86_64.rpm \
+        #          -x "*-debuginfo-*"
+        #        zip --junk-paths \
+        #          collectd-${{ steps.version.outputs.version }}-el7-x86_64-rpms-debuginfo.zip \
+        #          ${{ steps.buildrpm7.outputs.rpms_path }}/x86_64/*-debuginfo-*.el7.x86_64.rpm
 
     - name: build RPM package
       id: buildrpm8
