@@ -139,7 +139,7 @@ static mach_msg_type_number_t cpu_list_len;
 #endif
 /* colleague tells me that Sun doesn't sell systems with more than 100 or so
  * CPUs.. */
-#define MAX_NUMCPU 256
+#define MAX_NUMCPU 512
 extern kstat_ctl_t *kc;
 static kstat_t *ksp[MAX_NUMCPU];
 static int numcpu;
@@ -204,10 +204,9 @@ static bool report_num_cpu;
 static bool report_guest;
 static bool subtract_guest = true;
 
-static const char *config_keys[] = {"ReportByCpu",      "ReportByState",
-                                    "ReportTotal",      "ReportNumCpu",
-                                    "ValuesPercentage", "ReportGuestState",
-                                    "SubtractGuestState"};
+static const char *config_keys[] = {
+    "ReportByCpu",      "ReportByState",    "ReportTotal",       "ReportNumCpu",
+    "ValuesPercentage", "ReportGuestState", "SubtractGuestState"};
 static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
 
 static int cpu_config(char const *key, char const *value) /* {{{ */
@@ -218,7 +217,7 @@ static int cpu_config(char const *key, char const *value) /* {{{ */
     report_percent = IS_TRUE(value);
   else if (strcasecmp(key, "ReportByState") == 0)
     report_by_state = IS_TRUE(value);
-  else if (strcasecmp (key, "ReportTotal") == 0)
+  else if (strcasecmp(key, "ReportTotal") == 0)
     report_total = IS_TRUE(value);
   else if (strcasecmp(key, "ReportNumCpu") == 0)
     report_num_cpu = IS_TRUE(value);
@@ -343,7 +342,7 @@ static void submit_value(int cpu_num, int cpu_state, const char *type,
   if (cpu_num >= 0) {
     snprintf(vl.plugin_instance, sizeof(vl.plugin_instance), "%i", cpu_num);
   } else {
-    sstrncpy (vl.plugin_instance, "all", sizeof (vl.plugin_instance));
+    sstrncpy(vl.plugin_instance, "all", sizeof(vl.plugin_instance));
   }
   plugin_dispatch_values(&vl);
 }
@@ -539,18 +538,18 @@ static void cpu_commit_total(void) /* {{{ */
 {
   for (int state = 0; state < COLLECTD_CPU_STATE_ACTIVE; state++) {
     derive_t value = 0;
-    int has_value = 0;
+    int cpu_count = 0;
     for (size_t cpu_num = 0; cpu_num < global_cpu_num; cpu_num++) {
       cpu_state_t *s = get_cpu_state(cpu_num, state);
 
-      has_value += s->has_value;
       if (!s->has_value)
         continue;
 
       value += s->conv.last_value.derive;
+      cpu_count++;
     }
-    if (has_value) 
-      submit_derive(-1, (int)state, value/global_cpu_num);
+    if (cpu_count > 0)
+      submit_derive(-1, (int)state, value / cpu_count);
   }
 } /* }}} void cpu_commit_total */
 
