@@ -8,10 +8,15 @@ Collectd fork focused on performance:
 Check Releases (https://github.com/carlospeon/collectd/releases) for rpm packages.
 
 Submitted to upstream:
+
 [x] format_influxdb: add config option to write metadata
+
 [x] plugin.c: fix drop probability
+
 [x] Allow Alertmanager correlation and resolve, fix meta names with ':'
+
 [x] evaluate flush condition with oldest value in the buffer
+
 [ ] network.c: check notification metadata to avoid loops
 
  collectd - System information collection daemon
