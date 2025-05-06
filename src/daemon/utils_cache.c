@@ -82,7 +82,7 @@ struct uc_iter_s {
 };
 
 #define CACHE_SHARDS 31
-cache_shard_t cache_shard[CACHE_SHARDS];
+static cache_shard_t cache_shard[CACHE_SHARDS];
 
 //static c_avl_tree_t *cache_tree;
 //static pthread_mutex_t cache_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -255,20 +255,34 @@ int uc_init(void) {
 } /* int uc_init */
 
 int uc_check_timeout(void) {
-  struct {
+  struct expired_t {
     char *key;
     cdtime_t time;
     cdtime_t interval;
     unsigned long callbacks_mask;
-  } *expired = NULL;
-  size_t expired_num = 0;
+  };
+  typedef struct expired_t expired_t;
 
-  for (int i=0; i < CACHE_SHARDS; i++) {
-    pthread_mutex_lock(&cache_shard[i].lock);
+  struct expired_shard_t {
+    expired_t *exp;
+    size_t num;
+  };
+  typedef struct expired_shard_t expired_shard_t;
+
+  expired_shard_t expired_shard[CACHE_SHARDS];
+
+  for (int s=0; s < CACHE_SHARDS; s++) {
+    cache_shard_t *cs = &cache_shard[s];
+    expired_shard_t *es = &expired_shard[s];
+
+    es->exp = NULL;
+    es->num = 0;
+
     cdtime_t now = cdtime();
+    pthread_mutex_lock(&cs->lock);
 
     /* Build a list of entries to be flushed */
-    c_avl_iterator_t *iter = c_avl_get_iterator(cache_shard[i].tree);
+    c_avl_iterator_t *iter = c_avl_get_iterator(cs->tree);
     char *key = NULL;
     cache_entry_t *ce = NULL;
     while (c_avl_iterator_next(iter, (void *)&key, (void *)&ce) == 0) {
@@ -276,71 +290,99 @@ int uc_check_timeout(void) {
       if ((now - ce->last_update) < (ce->interval * timeout_g))
         continue;
 
-      /* If the entry was marked missing, continue */
-      if (ce->state == STATE_MISSING)
-        continue;
-
-      void *tmp = realloc(expired, (expired_num + 1) * sizeof(*expired));
+      DEBUG("uc_check_timeout: adding key to free \"%s\"", key);
+      void *tmp = realloc(es->exp, (es->num + 1) * sizeof(*es->exp));
       if (tmp == NULL) {
         ERROR("uc_check_timeout: realloc failed.");
         continue;
       }
-      expired = tmp;
+      es->exp = tmp;
 
-      expired[expired_num].key = strdup(key);
-      expired[expired_num].time = ce->last_time;
-      expired[expired_num].interval = ce->interval;
-      expired[expired_num].callbacks_mask = ce->callbacks_mask;
+      es->exp[es->num].key = strdup(key);
+      es->exp[es->num].time = ce->last_time;
+      es->exp[es->num].interval = ce->interval;
+      es->exp[es->num].callbacks_mask = ce->callbacks_mask;
 
-      if (expired[expired_num].key == NULL) {
+      if (es->exp[es->num].key == NULL) {
         ERROR("uc_check_timeout: strdup failed.");
         continue;
       }
 
-      expired_num++;
+      es->num++;
     } /* while (c_avl_iterator_next) */
 
     c_avl_iterator_destroy(iter);
-    pthread_mutex_unlock(&cache_shard[i].lock);
-  }
+    pthread_mutex_unlock(&cs->lock);
 
-  if (expired_num == 0) {
-    sfree(expired);
-    return 0;
-  }
+    if (es->num == 0) {
+      sfree(es->exp);
+    }
+  } /* for (int s=0; s < CACHE_SHARDS; s++) */
 
   /* Call the "missing" callback for each value. Do this before removing the
    * value from the cache, so that callbacks can still access the data stored,
    * including plugin specific meta data, rates, history, …. This must be done
    * without holding the lock, otherwise we will run into a deadlock if a
    * plugin calls the cache interface. */
-  for (size_t i = 0; i < expired_num; i++) {
-    value_list_t vl = {
-        .time = expired[i].time,
-        .interval = expired[i].interval,
-    };
+  for (int s=0; s < CACHE_SHARDS; s++) {
+    expired_shard_t *es = &expired_shard[s];
+    
+    for (size_t i = 0; i < es->num; i++) {
+      value_list_t vl = {
+        .time = es->exp[i].time,
+        .interval = es->exp[i].interval,
+      };
 
-    if (parse_identifier_vl(expired[i].key, &vl) != 0) {
-      ERROR("uc_check_timeout: parse_identifier_vl (\"%s\") failed.",
-            expired[i].key);
-      continue;
+      if (parse_identifier_vl(es->exp[i].key, &vl) != 0) {
+        ERROR("uc_check_timeout: parse_identifier_vl (\"%s\") failed.",
+            es->exp[i].key);
+        continue;
+      }
+
+      plugin_dispatch_missing(&vl);
+
+      if (es->exp[i].callbacks_mask)
+        plugin_dispatch_cache_event(CE_VALUE_EXPIRED, es->exp[i].callbacks_mask,
+                                    es->exp[i].key, &vl);
+
+    } /* for (size_t i = 0; i < es->num; i++) */ 
+  } /* for (int s=0; s < CACHE_SHARDS; s++) */
+
+  /* Now actually remove all the values from the cache. We don't re-evaluate
+   * the timestamp again, so in theory it is possible we remove a value after
+   * it is updated here. */
+  for (int s=0; s < CACHE_SHARDS; s++) {
+    cache_shard_t *cs = &cache_shard[s];
+    expired_shard_t *es = &expired_shard[s];
+
+    if (es->num > 0) {
+      pthread_mutex_lock(&cs->lock);
+      for (size_t i = 0; i < es->num; i++) {
+        char *key = NULL;
+        cache_entry_t *value = NULL;
+
+        DEBUG("uc_check_timeout: freeing key \"%s\"", es->exp[i].key);
+        if (c_avl_remove(cs->tree, es->exp[i].key, (void *)&key,
+              (void *)&value) != 0) {
+          ERROR("uc_check_timeout: c_avl_remove (\"%s\") failed.", es->exp[i].key);
+          sfree(es->exp[i].key);
+          continue;
+        }
+        sfree(key);
+        cache_free(value);
+
+        sfree(es->exp[i].key);
+
+        /* set state to STATE_MISSING so we can send an OKAY-notification
+           when the value comes back again */
+        /* uc_set_state(NULL, &vl, STATE_MISSING); */
+      } /* for (size_t i = 0; i < expired_num; i++) */
+      pthread_mutex_unlock(&cs->lock);
     }
+    sfree(es->exp);
 
-    plugin_dispatch_missing(&vl);
+  } /* for (int s=0; s < CACHE_SHARDS; s++) */
 
-    if (expired[i].callbacks_mask)
-      plugin_dispatch_cache_event(CE_VALUE_EXPIRED, expired[i].callbacks_mask,
-                                  expired[i].key, &vl);
-
-    /* set state to STATE_MISSING so we can send an OKAY-notification
-       when the value comes back again */
-    uc_set_state(NULL, &vl, STATE_MISSING);
-    sfree(expired[i].key);
-  } /* for (i = 0; i < expired_num; i++) */
-
-  /* Leave values in the cache to track missing values when they
-     come back again */
-  sfree(expired);
   return 0;
 } /* int uc_check_timeout */
 
