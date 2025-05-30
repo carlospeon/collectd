@@ -29,10 +29,10 @@
 #include "plugin.h"
 #include "utils/common/common.h"
 #include "utils/curl_stats/curl_stats.h"
+#include "utils/format_graphite/format_graphite.h"
 #include "utils/format_influxdb/format_influxdb.h"
 #include "utils/format_json/format_json.h"
 #include "utils/format_kairosdb/format_kairosdb.h"
-#include "utils/format_graphite/format_graphite.h"
 
 #include <curl/curl.h>
 
@@ -67,7 +67,6 @@ typedef struct slist {
   char *s;
   struct slist *next;
 } slist_t;
-
 
 typedef struct {
   char *name;
@@ -144,20 +143,20 @@ static char **http_attrs;
 static size_t http_attrs_num;
 
 /*
-* private thread storage (TLS)
-* thread index for each configuration node
-*/
+ * private thread storage (TLS)
+ * thread index for each configuration node
+ */
 static __thread wh_curl_t **tls_cb_thread_curls = NULL;
 
 static int total_nodes = 0;
 
 static int slist_append(slist_t **tail, const char *s) {
-  slist_t *item = (slist_t *) malloc(sizeof(slist_t));
-  if(!item)
+  slist_t *item = (slist_t *)malloc(sizeof(slist_t));
+  if (!item)
     return -ENOMEM;
 
   item->s = strdup(s);
-  if(!item->s)
+  if (!item->s)
     return -ENOMEM;
 
   item->next = NULL;
@@ -168,8 +167,7 @@ static int slist_append(slist_t **tail, const char *s) {
   return 0;
 }
 
-static int slist_free(slist_t **head) 
-{
+static int slist_free(slist_t **head) {
   while (*head != NULL) {
     slist_t *prev = *head;
     *head = (*head)->next;
@@ -180,10 +178,9 @@ static int slist_free(slist_t **head)
   return 0;
 }
 
-static int curll_prepend(curll_t **head, wh_curl_t *c) 
-{
-  curll_t *item = (curll_t *) malloc(sizeof(curll_t));
-  if(!item)
+static int curll_prepend(curll_t **head, wh_curl_t *c) {
+  curll_t *item = (curll_t *)malloc(sizeof(curll_t));
+  if (!item)
     return -ENOMEM;
 
   item->c = c;
@@ -194,7 +191,7 @@ static int curll_prepend(curll_t **head, wh_curl_t *c)
   return 0;
 }
 
-static int wh_thread_stop(user_data_t __attribute__((unused)) *user_data) {
+static int wh_thread_stop(user_data_t __attribute__((unused)) * user_data) {
   sfree(tls_cb_thread_curls);
   return 0;
 }
@@ -226,7 +223,7 @@ static void wh_reset_buffer(wh_curl_t *c) /* {{{ */
 
     if (c->format == WH_FORMAT_JSON || c->format == WH_FORMAT_KAIROSDB)
       format_json_initialize(c->request, &c->request_position,
-          &c->request_free);
+                             &c->request_free);
   }
 
   memset(c->response, 0, sizeof(c->response));
@@ -237,12 +234,11 @@ static void wh_reset_buffer(wh_curl_t *c) /* {{{ */
 } /* }}} wh_reset_buffer */
 
 /* libcurl may call this multiple times depending on how big the server's
-* http response is
-*/
+ * http response is
+ */
 static size_t wh_curl_write_callback(char *ptr,
-                                   size_t __attribute__((unused)) size,
-                                   size_t nmemb,
-                                   void *userdata) {
+                                     size_t __attribute__((unused)) size,
+                                     size_t nmemb, void *userdata) {
 
   wh_curl_t *c = (wh_curl_t *)userdata;
   size_t max_len = sizeof(c->response) - 1;
@@ -265,7 +261,7 @@ static size_t wh_curl_write_callback(char *ptr,
   c->response[c->response_position] = '\0';
 
   /* Always return nmemb even if we write less so libcurl won't throw an error
-  */
+   */
   return nmemb;
 
 } /* }}} wh_curl_write_callback */
@@ -286,13 +282,15 @@ static int wh_post_nolock(wh_curl_t *c) {
                                  c->name);
     if (rc != 0) {
       ERROR("write_http plugin: curl_stats_dispatch failed with "
-            "status %i", rc);
+            "status %i",
+            rc);
     }
   }
 
   if (status != CURLE_OK) {
     ERROR("write_http plugin: curl_easy_perform failed with "
-          "status %i: %s", status, c->error);
+          "status %i: %s",
+          status, c->error);
     if (strlen(c->response) > 0) {
       ERROR("write_http plugin: curl_response=%s", c->response);
     }
@@ -301,7 +299,6 @@ static int wh_post_nolock(wh_curl_t *c) {
   }
   return status;
 } /* }}} wh_post_nolock */
-
 
 static int wh_flush_nolock(cdtime_t timeout, wh_curl_t *c) /* {{{ */
 {
@@ -352,8 +349,8 @@ static int wh_flush_nolock(cdtime_t timeout, wh_curl_t *c) /* {{{ */
     wh_reset_buffer(c);
   } else {
     ERROR("write_http: wh_flush_nolock: "
-        "Unknown format: %i",
-        c->format);
+          "Unknown format: %i",
+          c->format);
     return -1;
   }
 
@@ -457,10 +454,10 @@ static void wh_callback_free(void *data) /* {{{ */
 
 static int tls_cb_thread_curls_init(void) {
 
-  tls_cb_thread_curls = (wh_curl_t**) calloc(total_nodes, sizeof(wh_curl_t*));
+  tls_cb_thread_curls = (wh_curl_t **)calloc(total_nodes, sizeof(wh_curl_t *));
   if (tls_cb_thread_curls == NULL) {
     ERROR("write_http plugin: malloc(%" PRIsz ") failed.",
-        total_nodes * sizeof(wh_curl_t*));
+          total_nodes * sizeof(wh_curl_t *));
     return -ENOMEM;
   }
 
@@ -520,12 +517,12 @@ static int wh_curl_init(wh_curl_t **curl, wh_callback_t *cb) /* {{{ */
 
   c->headers = curl_slist_append(c->headers, "Accept:  */*");
   if (!c->headers) {
-      ERROR("write_http: curl_slist_append failed.");
-      return -1;
+    ERROR("write_http: curl_slist_append failed.");
+    return -1;
   }
   if (cb->format == WH_FORMAT_JSON || cb->format == WH_FORMAT_KAIROSDB) {
-    c->headers = curl_slist_append(c->headers,
-                                   "Content-Type: application/json");
+    c->headers =
+        curl_slist_append(c->headers, "Content-Type: application/json");
     if (!c->headers) {
       ERROR("write_http: curl_slist_append failed.");
       return -1;
@@ -584,7 +581,8 @@ static int wh_curl_init(wh_curl_t **curl, wh_callback_t *cb) /* {{{ */
   }
 
   curl_easy_setopt(c->handler, CURLOPT_SSL_VERIFYPEER, (long)cb->verify_peer);
-  curl_easy_setopt(c->handler, CURLOPT_SSL_VERIFYHOST, cb->verify_host ? 2L : 0L);
+  curl_easy_setopt(c->handler, CURLOPT_SSL_VERIFYHOST,
+                   cb->verify_host ? 2L : 0L);
   curl_easy_setopt(c->handler, CURLOPT_SSLVERSION, cb->sslversion);
   if (cb->cacert != NULL)
     curl_easy_setopt(c->handler, CURLOPT_CAINFO, cb->cacert);
@@ -600,7 +598,8 @@ static int wh_curl_init(wh_curl_t **curl, wh_callback_t *cb) /* {{{ */
   }
 #ifdef CURL_VERSION_UNIX_SOCKETS
   if (cb->unix_socket_path) {
-    curl_easy_setopt(c->handler, CURLOPT_UNIX_SOCKET_PATH, cb->unix_socket_path);
+    curl_easy_setopt(c->handler, CURLOPT_UNIX_SOCKET_PATH,
+                     cb->unix_socket_path);
   }
 #endif // CURL_VERSION_UNIX_SOCKETS
 
@@ -610,8 +609,7 @@ static int wh_curl_init(wh_curl_t **curl, wh_callback_t *cb) /* {{{ */
 static int wh_thread_curl_init(wh_callback_t *cb) {
   pthread_mutex_lock(&cb->lock);
 
-  DEBUG("wh_thread_curl_init: cb-name: %s cb-index: %d ",
-        cb->name, cb->index);
+  DEBUG("wh_thread_curl_init: cb-name: %s cb-index: %d ", cb->name, cb->index);
 
   wh_curl_t *c = NULL;
   int status = wh_curl_init(&c, cb);
@@ -648,16 +646,14 @@ static wh_curl_t *wh_get_cb_thread_curl(wh_callback_t *cb) {
     c = tls_cb_thread_curls[cb->index];
   }
 
-  DEBUG("write_http plugin: cb-name:%s, cb-index:%d c-index:%d",
-        cb->name, cb->index, c->index);
+  DEBUG("write_http plugin: cb-name:%s, cb-index:%d c-index:%d", cb->name,
+        cb->index, c->index);
   return c;
 }
 
-
 static int wh_write_command(const data_set_t *ds,
                             const value_list_t *vl, /* {{{ */
-                            wh_callback_t *cb,
-                            wh_curl_t *c) {
+                            wh_callback_t *cb, wh_curl_t *c) {
   char key[10 * DATA_MAX_NAME_LEN];
   char values[512];
   char command[1024];
@@ -740,10 +736,10 @@ static int wh_write_json(const data_set_t *ds, const value_list_t *vl, /* {{{ */
                          wh_callback_t *cb, wh_curl_t *c) {
   int status;
 
-  //WARNING("wh_write_json: locking name:%s index:%d", c->name, c->index);
+  // WARNING("wh_write_json: locking name:%s index:%d", c->name, c->index);
   pthread_mutex_lock(&c->lock);
 
-  status = format_json_value_list(c->request, &c->request_position, 
+  status = format_json_value_list(c->request, &c->request_position,
                                   &c->request_free, ds, vl, cb->store_rates);
   if (status == -ENOMEM) {
     status = wh_flush_nolock(/* timeout = */ 0, c);
@@ -763,8 +759,7 @@ static int wh_write_json(const data_set_t *ds, const value_list_t *vl, /* {{{ */
 
   DEBUG("write_http plugin: <%s> buffer %" PRIsz "/%" PRIsz " (%g%%)",
         cb->location, c->request_position, c->request_size,
-        100.0 * ((double)c->request_position) /
-            ((double)c->request_size));
+        100.0 * ((double)c->request_position) / ((double)c->request_size));
 
   /* Check if we have enough space for this command. */
   pthread_mutex_unlock(&c->lock);
@@ -774,8 +769,7 @@ static int wh_write_json(const data_set_t *ds, const value_list_t *vl, /* {{{ */
 
 static int wh_write_kairosdb(const data_set_t *ds,
                              const value_list_t *vl, /* {{{ */
-                             wh_callback_t *cb,
-                             wh_curl_t *c) {
+                             wh_callback_t *cb, wh_curl_t *c) {
   int status;
 
   pthread_mutex_lock(&c->lock);
@@ -804,8 +798,7 @@ static int wh_write_kairosdb(const data_set_t *ds,
 
   DEBUG("write_http plugin: <%s> buffer %" PRIsz "/%" PRIsz " (%g%%)",
         cb->location, c->request_position, c->request_size,
-        100.0 * ((double)c->request_position) /
-            ((double)c->request_size));
+        100.0 * ((double)c->request_position) / ((double)c->request_size));
 
   /* Check if we have enough space for this command. */
   pthread_mutex_unlock(&c->lock);
@@ -815,8 +808,7 @@ static int wh_write_kairosdb(const data_set_t *ds,
 
 static int wh_write_influxdb(const data_set_t *ds,
                              const value_list_t *vl, /* {{{ */
-                             wh_callback_t *cb,
-                             wh_curl_t *c) {
+                             wh_callback_t *cb, wh_curl_t *c) {
   int status;
 
   pthread_mutex_lock(&c->lock);
@@ -852,8 +844,7 @@ static int wh_write_influxdb(const data_set_t *ds,
 
 static int wh_write_graphite(const data_set_t *ds,
                              const value_list_t *vl, /* {{{ */
-                             wh_callback_t *cb,
-                             wh_curl_t *c) {
+                             wh_callback_t *cb, wh_curl_t *c) {
   int status;
 
   pthread_mutex_lock(&c->lock);
@@ -865,10 +856,10 @@ static int wh_write_graphite(const data_set_t *ds,
   }
 
   size_t old_size = c->request_position;
-  status = format_graphite(c->request + c->request_position, c->request_free,
-                           ds, vl, cb->fmt_graphite.prefix,
-                           cb->fmt_graphite.postfix,
-                           cb->fmt_graphite.escape_char, cb->fmt_graphite.flags);
+  status =
+      format_graphite(c->request + c->request_position, c->request_free, ds, vl,
+                      cb->fmt_graphite.prefix, cb->fmt_graphite.postfix,
+                      cb->fmt_graphite.escape_char, cb->fmt_graphite.flags);
   if (status == -ENOMEM) {
     c->request[old_size] = '\0';
     status = wh_flush_nolock(/* timeout = */ 0, c);
@@ -878,11 +869,10 @@ static int wh_write_graphite(const data_set_t *ds,
       return status;
     }
 
-    status = format_graphite(c->request + c->request_position, c->request_free,
-                             ds, vl, cb->fmt_graphite.prefix,
-                             cb->fmt_graphite.postfix,
-                             cb->fmt_graphite.escape_char,
-                             cb->fmt_graphite.flags);
+    status =
+        format_graphite(c->request + c->request_position, c->request_free, ds,
+                        vl, cb->fmt_graphite.prefix, cb->fmt_graphite.postfix,
+                        cb->fmt_graphite.escape_char, cb->fmt_graphite.flags);
   }
   if (status != 0) {
     c->request_position = strlen(c->request);
@@ -893,8 +883,7 @@ static int wh_write_graphite(const data_set_t *ds,
 
   DEBUG("write_http plugin: <%s> buffer %" PRIsz "/%" PRIsz " (%g%%)",
         cb->location, c->request_position, c->request_size,
-        100.0 * ((double)c->request_position) /
-            ((double)c->request_size));
+        100.0 * ((double)c->request_position) / ((double)c->request_size));
 
   /* Check if we have enough space for this command. */
   pthread_mutex_unlock(&c->lock);
@@ -912,8 +901,8 @@ static int wh_write(const data_set_t *ds, const value_list_t *vl, /* {{{ */
   wh_callback_t *cb = user_data->data;
   assert(cb->send_metrics);
   wh_curl_t *c = wh_get_cb_thread_curl(cb);
-  DEBUG("wh_thread_curl_init: cb-name: %s cb-index: %d, c-index:%d",
-        cb->name, cb->index, c->index);
+  DEBUG("wh_thread_curl_init: cb-name: %s cb-index: %d, c-index:%d", cb->name,
+        cb->index, c->index);
 
   switch (c->format) {
   case WH_FORMAT_JSON:
@@ -984,12 +973,13 @@ static int config_set_char(char *dest, oconfig_item_t *ci) {
   return 0;
 }
 
-static int wh_config_format_graphite(oconfig_item_t *ci, format_graphite_t *fmt) {
+static int wh_config_format_graphite(oconfig_item_t *ci,
+                                     format_graphite_t *fmt) {
   int status = 0;
 
   for (int i = 0; i < ci->children_num; i++) {
     oconfig_item_t *child = ci->children + i;
-    
+
     if (strcasecmp("Prefix", child->key) == 0)
       cf_util_get_string(child, &fmt->prefix);
     else if (strcasecmp("Postfix", child->key) == 0)
@@ -1053,10 +1043,8 @@ static int config_set_format(wh_callback_t *cb, /* {{{ */
   return 0;
 } /* }}} int config_set_format */
 
-static int wh_config_append_string(const char *name,
-                                   slist_t **head,
-                                   slist_t **tail,
-                                   oconfig_item_t *ci) {
+static int wh_config_append_string(const char *name, slist_t **head,
+                                   slist_t **tail, oconfig_item_t *ci) {
   if ((ci->values_num != 1) || (ci->values[0].type != OCONFIG_TYPE_STRING)) {
     WARNING("write_http plugin: `%s' needs exactly one string argument.", name);
     return -1;
@@ -1301,7 +1289,6 @@ static int wh_config_node(oconfig_item_t *ci) /* {{{ */
       user_data.free_func = NULL;
       plugin_register_flush(callback_name, wh_flush, &user_data);
     }
-
   }
 
   return 0;
