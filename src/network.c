@@ -2793,7 +2793,7 @@ static int update_stats_values_sent(int sent) {
   return 0;
 } /* update_stats_values_sent */
 
-static int network_thread_start(void) {
+static int network_thread_start(user_data_t __attribute__((unused)) *user_data) {
   pthread_mutex_lock(&send_buffer.mutex);
 
   if (send_buffer.data == NULL) {
@@ -2898,7 +2898,7 @@ static int network_write(const data_set_t *ds, const value_list_t *vl,
   return (status < 0) ? -1 : 0;
 } /* int network_write */
 
-static int network_thread_stop(void) {
+static int network_thread_stop(user_data_t __attribute__((unused)) *user_data) {
   pthread_mutex_lock(&send_buffer.mutex);
   flush_buffer(&send_buffer);
 
@@ -3499,8 +3499,10 @@ static int network_init(void) {
 
   /* setup socket(s) and so on */
   if (sending_sockets != NULL) {
-    plugin_register_thread_stop("network", network_thread_stop);
-    plugin_register_thread_start("network", network_thread_start);
+    plugin_register_thread_stop("network", network_thread_stop,
+                                /* user_data = */ NULL);
+    plugin_register_thread_start("network", network_thread_start,
+                                 /* user_data = */ NULL);
     plugin_register_write("network", network_write,
                           /* user_data = */ NULL);
     plugin_register_notification("network", network_notification,

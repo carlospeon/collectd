@@ -361,7 +361,7 @@ static void flush_buffer(buffer_t *buffer) {
   write_influxdb_udp_init_buffer(buffer);
 }
 
-static int write_influxdb_udp_thread_start(void) {
+static int write_influxdb_udp_thread_start(user_data_t __attribute__((unused)) *user_data) {
   pthread_mutex_lock(&send_buffer.mutex);
 
   if (send_buffer.data == NULL) {
@@ -443,7 +443,7 @@ write_influxdb_udp_write(const data_set_t *ds, const value_list_t *vl,
   return 0;
 } /* int write_influxdb_udp_write */
 
-static int write_influxdb_udp_thread_stop(void) {
+static int write_influxdb_udp_thread_stop(user_data_t __attribute__((unused)) *user_data) {
   pthread_mutex_lock(&send_buffer.mutex);
   flush_buffer(&send_buffer);
 
@@ -644,9 +644,11 @@ static int write_influxdb_udp_init(void) {
   /* setup socket(s) and so on */
   if (sending_sockets != NULL) {
     plugin_register_thread_stop("write_influxdb_udp",
-                                write_influxdb_udp_thread_stop);
+                                write_influxdb_udp_thread_stop,
+                                /* user_data = */ NULL);
     plugin_register_thread_start("write_influxdb_udp",
-                                 write_influxdb_udp_thread_start);
+                                 write_influxdb_udp_thread_start,
+                                 /* user_data = */ NULL);
     plugin_register_write("write_influxdb_udp", write_influxdb_udp_write,
                           /* user_data = */ NULL);
   }

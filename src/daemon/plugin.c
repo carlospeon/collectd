@@ -908,7 +908,7 @@ static void *plugin_write_thread(void __attribute__((unused)) * args) /* {{{ */
     callback_func_t *cf = le->value;
     plugin_ctx_t old_ctx = plugin_set_ctx(cf->cf_ctx);
     plugin_thread_start_cb callback = cf->cf_callback;
-    int status = (*callback)();
+    int status = (*callback)(&cf->cf_udata);
     plugin_set_ctx(old_ctx);
 
     if (status != 0) {
@@ -940,7 +940,7 @@ static void *plugin_write_thread(void __attribute__((unused)) * args) /* {{{ */
     callback_func_t *cf = le->value;
     plugin_ctx_t old_ctx = plugin_set_ctx(cf->cf_ctx);
     plugin_thread_stop_cb callback = cf->cf_callback;
-    int status = (*callback)();
+    int status = (*callback)(&cf->cf_udata);
     plugin_set_ctx(old_ctx);
 
     if (status != 0) {
@@ -1102,6 +1102,23 @@ static int plugin_dispatch_notification_internal(const notification_t *notif) {
 } /* int plugin_dispatch_notification_internal */
 
 static void *plugin_notification_thread(void __attribute__((unused)) * args) {
+  for (llentry_t *le = llist_head(list_thread_start); le != NULL;
+       le = le->next) {
+    callback_func_t *cf = le->value;
+    plugin_ctx_t old_ctx = plugin_set_ctx(cf->cf_ctx);
+    plugin_thread_start_cb callback = cf->cf_callback;
+    int status = (*callback)(&cf->cf_udata);
+    plugin_set_ctx(old_ctx);
+
+    if (status != 0) {
+      ERROR("Thread start of plugin `%s' "
+            "failed with status %i. "
+            "Write will be unregistered.",
+            le->key, status);
+      plugin_unregister_write(le->key);
+    }
+  }
+
   while (notification_loop) {
     notification_t *notif = notification_dequeue();
     if (notif == NULL)
@@ -1114,6 +1131,23 @@ static void *plugin_notification_thread(void __attribute__((unused)) * args) {
       notif->meta = NULL;
     }
     sfree(notif);
+  }
+
+  for (llentry_t *le = llist_head(list_thread_stop); le != NULL;
+       le = le->next) {
+    callback_func_t *cf = le->value;
+    plugin_ctx_t old_ctx = plugin_set_ctx(cf->cf_ctx);
+    plugin_thread_stop_cb callback = cf->cf_callback;
+    int status = (*callback)(&cf->cf_udata);
+    plugin_set_ctx(old_ctx);
+
+    if (status != 0) {
+      ERROR("Thread stop of plugin `%s' "
+            "failed with status %i. "
+            "Write will be unregistered.",
+            le->key, status);
+      plugin_unregister_write(le->key);
+    }
   }
 
   pthread_exit(NULL);
@@ -1373,9 +1407,10 @@ EXPORT int plugin_register_init(const char *name, int (*callback)(void)) {
 } /* plugin_register_init */
 
 EXPORT int plugin_register_thread_start(const char *name,
-                                        int (*callback)(void)) {
+                                        plugin_thread_start_cb callback,
+                                        user_data_t const *ud) {
   return create_register_callback(&list_thread_start, false, name,
-                                  (void *)callback, NULL);
+                                  (void *)callback, ud);
 } /* plugin_register_thread_start */
 
 static int plugin_compare_read_func(const void *arg0, const void *arg1) {
@@ -1690,9 +1725,10 @@ EXPORT int plugin_register_cache_event(const char *name,
 } /* int plugin_register_cache_event */
 
 EXPORT int plugin_register_thread_stop(const char *name,
-                                       int (*callback)(void)) {
+                                       plugin_thread_stop_cb callback,
+                                       user_data_t const *ud) {
   return create_register_callback(&list_thread_stop, false, name,
-                                  (void *)callback, NULL);
+                                  (void *)callback, ud);
 } /* plugin_register_thread_stop */
 
 EXPORT int plugin_register_shutdown(const char *name, int (*callback)(void)) {
