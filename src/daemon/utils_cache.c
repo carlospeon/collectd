@@ -317,16 +317,12 @@ int uc_check_timeout(void) {
     if (es->num == 0) {
       sfree(es->exp);
     }
-  } /* for (int s=0; s < CACHE_SHARDS; s++) */
 
-  /* Call the "missing" callback for each value. Do this before removing the
-   * value from the cache, so that callbacks can still access the data stored,
-   * including plugin specific meta data, rates, history, …. This must be done
-   * without holding the lock, otherwise we will run into a deadlock if a
-   * plugin calls the cache interface. */
-  for (int s=0; s < CACHE_SHARDS; s++) {
-    expired_shard_t *es = &expired_shard[s];
-    
+    /* Call the "missing" callback for each value. Do this before removing the
+     * value from the cache, so that callbacks can still access the data stored,
+     * including plugin specific meta data, rates, history, …. This must be done
+     * without holding the lock, otherwise we will run into a deadlock if a
+     * plugin calls the cache interface. */
     for (size_t i = 0; i < es->num; i++) {
       value_list_t vl = {
         .time = es->exp[i].time,
@@ -346,15 +342,10 @@ int uc_check_timeout(void) {
                                     es->exp[i].key, &vl);
 
     } /* for (size_t i = 0; i < es->num; i++) */ 
-  } /* for (int s=0; s < CACHE_SHARDS; s++) */
 
-  /* Now actually remove all the values from the cache. We don't re-evaluate
-   * the timestamp again, so in theory it is possible we remove a value after
-   * it is updated here. */
-  for (int s=0; s < CACHE_SHARDS; s++) {
-    cache_shard_t *cs = &cache_shard[s];
-    expired_shard_t *es = &expired_shard[s];
-
+    /* Now actually remove all the values from the cache. We don't re-evaluate
+     * the timestamp again, so in theory it is possible we remove a value after
+     * it is updated here. */
     if (es->num > 0) {
       pthread_mutex_lock(&cs->lock);
       for (size_t i = 0; i < es->num; i++) {
@@ -373,9 +364,6 @@ int uc_check_timeout(void) {
 
         sfree(es->exp[i].key);
 
-        /* set state to STATE_MISSING so we can send an OKAY-notification
-           when the value comes back again */
-        /* uc_set_state(NULL, &vl, STATE_MISSING); */
       } /* for (size_t i = 0; i < expired_num; i++) */
       pthread_mutex_unlock(&cs->lock);
     }
