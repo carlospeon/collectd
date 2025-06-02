@@ -1,9 +1,11 @@
 Collectd fork focused on performance:
 
-* Avoid mutex where possible moving shared queues to thread local storage.
+* network, write_influxudp plugin: avoid mutex where possible moving shared queues to thread local storage.
 * Reduce mutex locks processing batchs instead of single elements.
-* Add multiple dispatchs threads in the network plugin.
+* network pllugin: add multiple dispatchs threads in the network plugin.
 * Move notification writes from read threads to its own thread.
+* Allow forwarding of notifications
+* write_http plugin: multithreading, move buffer and curl handler to thread local storage.
 
 Check Releases (https://github.com/carlospeon/collectd/releases) for rpm packages.
 
@@ -13,7 +15,8 @@ Submitted to upstream:
 - [x] plugin.c: fix drop probability
 - [x] Allow Alertmanager correlation and resolve, fix meta names with ':'
 - [x] evaluate flush condition with oldest value in the buffer
-- [ ] network.c: check notification metadata to avoid loops
+- [-] network.c: check notification metadata to avoid loops. Rejected.
+  
 
  collectd - System information collection daemon
 =================================================
