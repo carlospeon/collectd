@@ -268,19 +268,17 @@ bool expired(void *n, ...) {
 }
 
 int uc_check_timeout(void) {
-  struct expired_t {
+  typedef struct {
     char *key;
     cdtime_t time;
     cdtime_t interval;
     unsigned long callbacks_mask;
-  };
-  typedef struct expired_t expired_t;
+  } expired_t;
 
-  struct expired_shard_t {
+  typedef struct {
     expired_t *exp;
     size_t num;
-  };
-  typedef struct expired_shard_t expired_shard_t;
+  } expired_shard_t;
 
   expired_shard_t expired_shard[CACHE_SHARDS];
 
@@ -329,6 +327,7 @@ int uc_check_timeout(void) {
 
     if (es->num == 0) {
       sfree(es->exp);
+      continue;
     }
 
     /* Call the "missing" callback for each value. Do this before removing the
@@ -336,6 +335,7 @@ int uc_check_timeout(void) {
      * including plugin specific meta data, rates, history, …. This must be done
      * without holding the lock, otherwise we will run into a deadlock if a
      * plugin calls the cache interface. */
+
     for (size_t i = 0; i < es->num; i++) {
       value_list_t vl = {
         .time = es->exp[i].time,
@@ -357,38 +357,32 @@ int uc_check_timeout(void) {
     } /* for (size_t i = 0; i < es->num; i++) */ 
 
     /* Now actually remove all the values from the cache. */
-    if (es->num > 0) {
-      pthread_mutex_lock(&cs->lock);
-      cdtime_t now = cdtime();
+    pthread_mutex_lock(&cs->lock);
+    for (size_t i = 0; i < es->num; i++) {
+      char *key = NULL;
+      cache_entry_t *value = NULL;
 
-      for (size_t i = 0; i < es->num; i++) {
-        char *key = NULL;
-        cache_entry_t *value = NULL;
-
-        DEBUG("uc_check_timeout: freeing key \"%s\"", es->exp[i].key);
-        /*
-        if (c_avl_remove(cs->tree, es->exp[i].key, (void *)&key,
-              (void *)&value) != 0) {
-         */
-        if (c_avl_remove_if(cs->tree, es->exp[i].key, (void *)&key,
-              (void *)&value, expired, now) != 0) {
-          if (value == NULL)
-            ERROR("uc_check_timeout: c_avl_remove (\"%s\") failed.", es->exp[i].key);
-          else
-            INFO("uc_check_timeout: c_avl_remove (\"%s\") not expired.", es->exp[i].key);
-          sfree(es->exp[i].key);
-          continue;
-        }
-        sfree(key);
-        cache_free(value);
-
+      DEBUG("uc_check_timeout: freeing key \"%s\"", es->exp[i].key);
+      if (c_avl_remove_if(cs->tree, es->exp[i].key, (void *)&key,
+            (void *)&value, expired, now) != 0) {
+        if (value == NULL)
+          ERROR("uc_check_timeout: c_avl_remove (\"%s\") failed.",
+                es->exp[i].key);
+        else
+          INFO("uc_check_timeout: c_avl_remove (\"%s\") not expired.",
+               es->exp[i].key);
         sfree(es->exp[i].key);
+        continue;
+      }
+      sfree(key);
+      cache_free(value);
 
-      } /* for (size_t i = 0; i < expired_num; i++) */
-      pthread_mutex_unlock(&cs->lock);
-    }
+      sfree(es->exp[i].key);
+
+    } /* for (size_t i = 0; i < expired_num; i++) */
+    pthread_mutex_unlock(&cs->lock);
+
     sfree(es->exp);
-
   } /* for (int s=0; s < CACHE_SHARDS; s++) */
 
   return 0;
