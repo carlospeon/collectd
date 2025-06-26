@@ -110,6 +110,38 @@ int c_avl_remove(c_avl_tree_t *t, const void *key, void **rkey, void **rvalue);
 
 /*
  * NAME
+ *   c_avl_remove_if
+ *
+ * DESCRIPTION
+ *   Removes a key-value-pair from the tree t if function argument returns true.
+ *   The stored key and value is returned in `rkey' and `rvalue' if found in the
+ *   tree t.
+ *
+ * PARAMETERS
+ *   `t'	AVL-tree to remove key-value-pair from.
+ *   `key'      Key to identify the entry.
+ *   `rkey'     Pointer to a pointer in which to store the key. May be NULL.
+ *              Since the `key' pointer is not copied when creating an entry,
+ *              the pointer may not be available anymore from outside the tree.
+ *              You can use this argument to get the actual pointer back and
+ *              free the memory pointed to by it.
+ *   `rvalue'   Pointer to a pointer in which to store the value. May be NULL.
+ *   `check'    Pointer to a function which evaluate if the item is actually
+ *              removed from the tree. A return value of `true' removes the
+ *              item, `false' keeps the tree unchanged.
+ *              The first argument of the function is the entry from the cache,
+ *              others arguments are optional and may be used if needed.
+ *   `...'      Extra optional arguments to call `check' function.
+ *
+ * RETURN VALUE
+ *   Zero upon success or non-zero if the key isn't found in the tree.
+ */
+typedef bool c_avl_check(void*, ...);
+int c_avl_remove_if(c_avl_tree_t *t, const void *key, void **rkey, void **rvalue,
+                    c_avl_check *check, ...);
+
+/*
+ * NAME
  *   c_avl_get
  *
  * DESCRIPTION

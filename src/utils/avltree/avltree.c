@@ -25,6 +25,8 @@
  **/
 
 #include <assert.h>
+#include <stdarg.h>
+#include <stdbool.h>
 #include <stdlib.h>
 
 #include "utils/avltree/avltree.h"
@@ -515,7 +517,8 @@ int c_avl_remove(c_avl_tree_t *t, const void *key, void **rkey, void **rvalue) {
   return status;
 } /* void *c_avl_remove */
 
-int c_avl_remove_if(c_avl_tree_t *t, const void *key, void **rkey, void **rvalue, bool (*f)(c_avl_node_t, ...)) {
+int c_avl_remove_if(c_avl_tree_t *t, const void *key, void **rkey, void **rvalue,
+                    c_avl_check *check, ...) {
   c_avl_node_t *n;
   int status;
 
@@ -531,11 +534,11 @@ int c_avl_remove_if(c_avl_tree_t *t, const void *key, void **rkey, void **rvalue
     *rvalue = n->value;
 
   va_list args;
-  va_start(args, function);
-  // This line is just to explain what i want
-  function(args);
+  va_start(args, check);
+  bool delete = (*check)((void*)n, args);
   va_end(args);
-  if ((*f)
+  if (!delete)
+    return -1;
 
   status = _remove(t, n);
   verify_tree(t->root);
