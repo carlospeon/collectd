@@ -554,8 +554,8 @@ the byte- and packet-counters of selected rules and submit them to collectd.
 Summary:	Java plugin for collectd
 Group:		System Environment/Daemons
 Requires:	%{name}%{?_isa} = %{version}-%{release}
-BuildRequires:	java-devel >= 1.6, jpackage-utils >= 1.6
-Requires:	java >= 1.6, jpackage-utils >= 1.6
+BuildRequires:	java-1.8.0-openjdk-devel >= 1.8
+Requires:	java-1.8.0-openjdk >= 1.8
 %description java
 This plugin for collectd allows plugins to be written in Java and executed
 in an embedded JVM.
