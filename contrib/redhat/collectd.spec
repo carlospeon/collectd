@@ -237,17 +237,23 @@
 
 # Plugins not buildable on RHEL 8
 %if 0%{?rhel} && 0%{?rhel} == 8
+%define with_epics 0
+%define with_java 0
 %define with_modbus 0
+%define with_mongodb 0
+%define with_nut 0
+%define with_write_mongodb 0
 %endif
 
 # Plugins not buildable on RHEL 9
 %if 0%{?rhel} && 0%{?rhel} == 9
-%define with_amqp1 0
-%define with_dbi 0
 %define with_iptables 0
+%define with_java 0
 %define with_perl 0
 %define with_modbus 0
-%define with_notify_dbi 0
+%define with_nut 0
+%define with_mongodb 0
+%define with_write_mongodb 0
 %endif
 
 Summary:        Statistics collection and monitoring daemon
@@ -554,8 +560,8 @@ the byte- and packet-counters of selected rules and submit them to collectd.
 Summary:	Java plugin for collectd
 Group:		System Environment/Daemons
 Requires:	%{name}%{?_isa} = %{version}-%{release}
-BuildRequires:	java-1.8.0-openjdk-devel >= 1.8
-Requires:	java-1.8.0-openjdk >= 1.8
+BuildRequires: java-1.8.0-openjdk-devel >= 1.8
+Requires: java-1.8.0-openjdk >= 1.8
 %description java
 This plugin for collectd allows plugins to be written in Java and executed
 in an embedded JVM.
