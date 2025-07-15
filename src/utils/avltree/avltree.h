@@ -136,7 +136,7 @@ int c_avl_remove(c_avl_tree_t *t, const void *key, void **rkey, void **rvalue);
  * RETURN VALUE
  *   Zero upon success or non-zero if the key isn't found in the tree.
  */
-typedef bool c_avl_check(void*, ...);
+typedef bool c_avl_check(void*, va_list);
 int c_avl_remove_if(c_avl_tree_t *t, const void *key, void **rkey, void **rvalue,
                     c_avl_check *check, ...);
 

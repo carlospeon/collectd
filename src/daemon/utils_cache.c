@@ -254,17 +254,12 @@ int uc_init(void) {
   return 0;
 } /* int uc_init */
 
-bool expired(void *n, ...) {
+#define EXPIRED(ce, now) ((now - ce->last_update) >= (ce->interval * timeout_g))
+
+bool expired_va(void *n, va_list args) {
   cache_entry_t *ce = (cache_entry_t*) n;
-
-  va_list args;
-  va_start(args, n);
   cdtime_t now = va_arg(args, cdtime_t);
-  va_end(args);
-
-  if ((now - ce->last_update) >= (ce->interval * timeout_g))
-    return true;
-  return false;
+  return EXPIRED(ce, now);
 }
 
 int uc_check_timeout(void) {
@@ -298,7 +293,7 @@ int uc_check_timeout(void) {
     cache_entry_t *ce = NULL;
     while (c_avl_iterator_next(iter, (void *)&key, (void *)&ce) == 0) {
       /* If the entry is fresh enough, continue. */
-      if (!expired((void*)ce, now))
+      if (!EXPIRED(ce, now))
         continue;
 
       DEBUG("uc_check_timeout: adding key to free \"%s\"", key);
@@ -364,7 +359,7 @@ int uc_check_timeout(void) {
 
       DEBUG("uc_check_timeout: freeing key \"%s\"", es->exp[i].key);
       if (c_avl_remove_if(cs->tree, es->exp[i].key, (void *)&key,
-            (void *)&value, expired, now) != 0) {
+            (void *)&value, expired_va, now) != 0) {
         if (value == NULL)
           ERROR("uc_check_timeout: c_avl_remove (\"%s\") failed.",
                 es->exp[i].key);
