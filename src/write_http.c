@@ -472,7 +472,6 @@ static int wh_curl_init(wh_curl_t **curl, wh_callback_t *cb) /* {{{ */
   *curl = malloc(sizeof(wh_curl_t));
   if (*curl == NULL) {
     ERROR("write_http plugin: malloc failed.");
-    pthread_mutex_unlock(&cb->lock);
     return -ENOMEM;
   }
   wh_curl_t *c = *curl;
@@ -1278,15 +1277,17 @@ static int wh_config_node(oconfig_item_t *ci) /* {{{ */
   };
 
   if (cb->send_metrics || cb->send_notifications) {
-    plugin_register_thread_stop(callback_name, wh_thread_stop, &user_data);
+    plugin_register_thread_stop(callback_name, wh_thread_stop,
+                                /* user_data = */ NULL);
 
     if (cb->send_notifications) {
       plugin_register_notification(callback_name, wh_notify, &user_data);
+      user_data.free_func = NULL;
     }
     if (cb->send_metrics) {
       plugin_register_write(callback_name, wh_write, &user_data);
-
       user_data.free_func = NULL;
+
       plugin_register_flush(callback_name, wh_flush, &user_data);
     }
   }
