@@ -930,7 +930,7 @@ static int rrd_cache_destroy(void) /* {{{ */
   for (int i=0; i < CACHE_SHARDS; i++) {
     pthread_mutex_lock(&cache_shard[i].lock);
 
-    if (&cache_shard[i].tree == NULL) {
+    if (cache_shard[i].tree == NULL) {
       pthread_mutex_unlock(&cache_shard[i].lock);
       return 0;
     }

@@ -75,7 +75,8 @@ extern char           *c_file;
 %type <ci> entire_file
 
 /* pass an verbose, specific error message to yyerror() */
-%error-verbose
+/* %error-verbose */
+%define parse.error verbose
 
 %%
 string:

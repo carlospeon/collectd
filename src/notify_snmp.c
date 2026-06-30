@@ -148,8 +148,8 @@ static notify_snmp_oids_t *notify_snmp_get_oids (char *name) /* {{{ */
     oids = notify_snmp_oids;
     while (oids != NULL)
     {
-        if ((name == NULL && oids->name==NULL) ||
-            strcasecmp(oids->name, name) == 0)
+        if ((name == NULL && oids->name == NULL) ||
+            (name != NULL && oids->name != NULL && strcasecmp(oids->name, name) == 0))
             return oids;
         oids = oids->next;
     }
