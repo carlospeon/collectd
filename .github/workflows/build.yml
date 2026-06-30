@@ -73,6 +73,23 @@ jobs:
           collectd-${{ steps.version.outputs.version }}-el9-x86_64-rpms-debuginfo.zip \
           ${{ steps.buildrpm9.outputs.rpms_path }}/x86_64/*-debuginfo-*.el9.x86_64.rpm
 
+    - name: build RPM package
+      id: buildrpm10
+      uses: carlospeon/buildrpm@alma10
+      with:
+        spec: contrib/redhat/collectd.spec
+        version: ${{ steps.version.outputs.version }}
+
+    - name: zip rpms
+      run: |
+        zip --junk-paths \
+          collectd-${{ steps.version.outputs.version }}-el10-x86_64-rpms.zip \
+          ${{ steps.buildrpm9.outputs.rpms_path }}/x86_64/*.el10.x86_64.rpm \
+          -x "*-debuginfo-*"
+        zip --junk-paths \
+          collectd-${{ steps.version.outputs.version }}-el10-x86_64-rpms-debuginfo.zip \
+          ${{ steps.buildrpm9.outputs.rpms_path }}/x86_64/*-debuginfo-*.el10.x86_64.rpm
+
     - uses: ncipollo/release-action@v1
       with:
         name: collectd-${{ steps.version.outputs.version }}
