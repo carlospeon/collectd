@@ -256,6 +256,11 @@
 %define with_write_mongodb 0
 %endif
 
+%if 0%{?rhel} && 0%{?rhel} == 10
+%define with_iptables 0
+%define with_java 0
+%endif
+
 Summary:        Statistics collection and monitoring daemon
 Name:           collectd
 Version:        %{?version}
@@ -544,7 +549,7 @@ using the Intelligent Platform Management Interface (IPMI).
 Summary:	IPtables plugin for collectd
 Group:		System Environment/Daemons
 Requires:	%{name}%{?_isa} = %{version}-%{release}
-%if 0%{?fedora} || 0%{?rhel} >= 9
+%if 0%{?fedora} || 0%{?rhel} == 9
 BuildRequires:	iptables-legacy-devel
 %else
 BuildRequires:	iptables-devel
@@ -662,7 +667,7 @@ Requires:	%{name}%{?_isa} = %{version}-%{release}
 %if 0%{?rhel} && 0%{?rhel} > 5 && 0%{?rhel} < 8 
 BuildRequires:	mysql-devel
 %endif
-%if 0%{?rhel} && 0%{?rhel} > 7 && 0%{?rhel} < 10
+%if 0%{?rhel} && 0%{?rhel} > 7 && 0%{?rhel} < 11
 BuildRequires:	mariadb-connector-c-devel
 %endif
 %description mysql
