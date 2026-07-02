@@ -47,7 +47,8 @@ struct rrdcreate_config_s {
 };
 typedef struct rrdcreate_config_s rrdcreate_config_t;
 
-int cu_rrd_create_file(const char *filename, const data_set_t *ds,
-                       const value_list_t *vl, const rrdcreate_config_t *cfg);
+int cu_rrd_create_file(const char *filename, const char *type,
+                       cdtime_t value_time, cdtime_t interval,
+                       const rrdcreate_config_t *cfg);
 
 #endif /* UTILS_RRDCREATE_H */

@@ -52,11 +52,19 @@
 #define STA_NANO 0x2000
 #endif
 
-static const char *config_keys[] = {"Host", "Port", "ReverseLookups",
-                                    "IncludeUnitID"};
+static const char *config_keys[] = {"Host", 
+                                    "Port",
+                                    "ReverseLookups",
+                                    "IncludeUnitID",
+                                    "CollectInfoKern",
+                                    "CollectInfoPeer",
+                                    "CollectInfoSys"};
 static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
 
 static bool do_reverse_lookups = true;
+static bool collect_info_kern = true;
+static bool collect_info_peer = true;
+static bool collect_info_sys = false;
 
 /* This option only exists for backward compatibility. If it is false and two
  * ntpd peers use the same refclock driver, the plugin will try to write
@@ -280,6 +288,27 @@ static int ntpd_config(const char *key, const char *value) {
       include_unit_id = true;
     else
       include_unit_id = false;
+  }
+  else if (strcasecmp (key, "CollectInfoKern") == 0)
+  {
+    if (IS_TRUE (value))
+      collect_info_kern = true;
+    else
+      collect_info_kern = false;
+  }
+  else if (strcasecmp (key, "CollectInfoPeer") == 0)
+  {
+    if (IS_TRUE (value))
+      collect_info_peer = true;
+    else
+      collect_info_peer = false;
+  }
+  else if (strcasecmp (key, "CollectInfoSys") == 0)
+  {
+    if (IS_TRUE (value))
+      collect_info_sys = true;
+    else
+      collect_info_sys = false;
   } else {
     return -1;
   }
@@ -788,6 +817,10 @@ static int ntpd_read(void) {
   int ps_num;
   int ps_size;
 
+  struct info_sys  *is;
+  int               is_num;
+  int               is_size;
+
   gauge_t offset_loop;
   gauge_t freq_loop;
   gauge_t offset_error;
@@ -799,132 +832,173 @@ static int ntpd_read(void) {
   double scale_loop = 1e-6;
   double scale_error = 1e-6;
 
-  ik = NULL;
-  ik_num = 0;
-  ik_size = 0;
+  if (collect_info_kern) 
+  {
+    ik = NULL;
+    ik_num = 0;
+    ik_size = 0;
 
-  status = ntpd_do_query(REQ_GET_KERNEL, 0, 0, NULL, /* request data */
-                         &ik_num, &ik_size,
-                         (char **)((void *)&ik), /* response data */
-                         sizeof(struct info_kernel));
-  if (status != 0) {
-    ERROR("ntpd plugin: ntpd_do_query (REQ_GET_KERNEL) failed with status %i",
+    status = ntpd_do_query(REQ_GET_KERNEL, 0, 0, NULL, /* request data */
+                           &ik_num, &ik_size,
+                           (char **)((void *)&ik), /* response data */
+                           sizeof(struct info_kernel));
+    if (status != 0) {
+      ERROR("ntpd plugin: ntpd_do_query (REQ_GET_KERNEL) failed with status %i",
+            status);
+      free(ik);
+      return status;
+    } else if ((ik == NULL) || (ik_num == 0) || (ik_size == 0)) {
+      ERROR("ntpd plugin: ntpd_do_query returned unexpected data. "
+            "(ik = %p; ik_num = %i; ik_size = %i)",
+            (void *)ik, ik_num, ik_size);
+      free(ik);
+      return -1;
+    }
+
+    if (ntohs(ik->status) & STA_NANO) {
+      scale_loop = 1e-9;
+      scale_error = 1e-9;
+    }
+
+    /* kerninfo -> estimated error */
+    offset_loop = (gauge_t)((int32_t)ntohl(ik->offset) * scale_loop);
+    freq_loop = ntpd_read_fp(ik->freq);
+    offset_error = (gauge_t)((int32_t)ntohl(ik->esterror) * scale_error);
+
+    DEBUG("info_kernel:\n"
+          "  pll offset    = %.8g\n"
+          "  pll frequency = %.8g\n" /* drift compensation */
+          "  est error     = %.8g\n",
+          offset_loop, freq_loop, offset_error);
+
+    ntpd_submit("frequency_offset", "loop", freq_loop);
+    ntpd_submit("time_offset", "loop", offset_loop);
+    ntpd_submit("time_offset", "error", offset_error);
+
+    free(ik);
+    ik = NULL;
+  }
+  
+  if (collect_info_peer)
+  {
+    status = ntpd_do_query(REQ_PEER_LIST_SUM, 0, 0, NULL, /* request data */
+                           &ps_num, &ps_size,
+                           (char **)((void *)&ps), /* response data */
+                           sizeof(struct info_peer_summary));
+    if (status != 0) {
+      ERROR(
+          "ntpd plugin: ntpd_do_query (REQ_PEER_LIST_SUM) failed with status %i",
           status);
-    free(ik);
-    return status;
-  } else if ((ik == NULL) || (ik_num == 0) || (ik_size == 0)) {
-    ERROR("ntpd plugin: ntpd_do_query returned unexpected data. "
-          "(ik = %p; ik_num = %i; ik_size = %i)",
-          (void *)ik, ik_num, ik_size);
-    free(ik);
-    return -1;
-  }
+      free(ps);
+      return status;
+    } else if ((ps == NULL) || (ps_num == 0) || (ps_size == 0)) {
+      ERROR("ntpd plugin: ntpd_do_query returned unexpected data. "
+            "(ps = %p; ps_num = %i; ps_size = %i)",
+            (void *)ps, ps_num, ps_size);
+      free(ps);
+      return -1;
+    }
 
-  if (ntohs(ik->status) & STA_NANO) {
-    scale_loop = 1e-9;
-    scale_error = 1e-9;
-  }
+    for (int i = 0; i < ps_num; i++) {
+      struct info_peer_summary *ptr;
+      double offset;
 
-  /* kerninfo -> estimated error */
-  offset_loop = (gauge_t)((int32_t)ntohl(ik->offset) * scale_loop);
-  freq_loop = ntpd_read_fp(ik->freq);
-  offset_error = (gauge_t)((int32_t)ntohl(ik->esterror) * scale_error);
+      char peername[NI_MAXHOST];
+      uint32_t refclock_id;
 
-  DEBUG("info_kernel:\n"
-        "  pll offset    = %.8g\n"
-        "  pll frequency = %.8g\n" /* drift compensation */
-        "  est error     = %.8g\n",
-        offset_loop, freq_loop, offset_error);
+      ptr = ps + i;
 
-  ntpd_submit("frequency_offset", "loop", freq_loop);
-  ntpd_submit("time_offset", "loop", offset_loop);
-  ntpd_submit("time_offset", "error", offset_error);
-
-  free(ik);
-  ik = NULL;
-
-  status = ntpd_do_query(REQ_PEER_LIST_SUM, 0, 0, NULL, /* request data */
-                         &ps_num, &ps_size,
-                         (char **)((void *)&ps), /* response data */
-                         sizeof(struct info_peer_summary));
-  if (status != 0) {
-    ERROR(
-        "ntpd plugin: ntpd_do_query (REQ_PEER_LIST_SUM) failed with status %i",
-        status);
-    free(ps);
-    return status;
-  } else if ((ps == NULL) || (ps_num == 0) || (ps_size == 0)) {
-    ERROR("ntpd plugin: ntpd_do_query returned unexpected data. "
-          "(ps = %p; ps_num = %i; ps_size = %i)",
-          (void *)ps, ps_num, ps_size);
-    free(ps);
-    return -1;
-  }
-
-  for (int i = 0; i < ps_num; i++) {
-    struct info_peer_summary *ptr;
-    double offset;
-
-    char peername[NI_MAXHOST];
-    uint32_t refclock_id;
-
-    ptr = ps + i;
-
-    int is_refclock = !ptr->v6_flag &&
+      int is_refclock = !ptr->v6_flag &&
                       ((ntohl(ptr->srcadr) & REFCLOCK_MASK) == REFCLOCK_ADDR);
 
-    if (is_refclock)
-      status = ntpd_get_name_refclock(peername, sizeof(peername), ptr);
-    else
-      status = ntpd_get_name_from_address(peername, sizeof(peername), ptr,
+      if (is_refclock)
+        status = ntpd_get_name_refclock(peername, sizeof(peername), ptr);
+      else
+        status = ntpd_get_name_from_address(peername, sizeof(peername), ptr,
                                           do_reverse_lookups);
 
-    if (status != 0) {
-      ERROR("ntpd plugin: Determining name of peer failed.");
-      continue;
+      if (status != 0) {
+        ERROR("ntpd plugin: Determining name of peer failed.");
+        continue;
+      }
+
+      // `0.0.0.0` hosts are caused by POOL servers
+      // see https://github.com/collectd/collectd/issues/2358
+      if (strcmp(peername, "0.0.0.0") == 0) {
+        continue;
+      }
+
+      refclock_id = ntpd_get_refclock_id(ptr);
+
+      /* Convert the `long floating point' offset value to double */
+      M_LFPTOD(ntohl(ptr->offset_int), ntohl(ptr->offset_frc), offset);
+
+      DEBUG("peer %i:\n"
+            "  is_refclock= %d\n"
+            "  refclock_id= %d\n"
+            "  peername   = %s\n"
+            "  srcadr     = 0x%08x\n"
+            "  reach      = 0%03o\n"
+            "  delay      = %f\n"
+            "  offset_int = %i\n"
+            "  offset_frc = %i\n"
+            "  offset     = %f\n"
+            "  dispersion = %f\n",
+            i, is_refclock, (is_refclock > 0) ? refclock_id : 0, peername,
+            ntohl(ptr->srcadr), ptr->reach, ntpd_read_fp(ptr->delay),
+            ntohl(ptr->offset_int), ntohl(ptr->offset_frc), offset,
+            ntpd_read_fp(ptr->dispersion));
+
+      ntpd_submit_reach("time_dispersion", peername, ptr->reach,
+                        ntpd_read_fp(ptr->dispersion));
+
+      /* not the system clock (offset will always be zero) */
+      if (!(is_refclock && refclock_id == 1))
+        ntpd_submit_reach("time_offset", peername, ptr->reach, offset);
+
+      if (!is_refclock) /* not a reference clock */
+        ntpd_submit_reach("delay", peername, ptr->reach,
+                          ntpd_read_fp(ptr->delay));
     }
 
-    // `0.0.0.0` hosts are caused by POOL servers
-    // see https://github.com/collectd/collectd/issues/2358
-    if (strcmp(peername, "0.0.0.0") == 0) {
-      continue;
-    }
-
-    refclock_id = ntpd_get_refclock_id(ptr);
-
-    /* Convert the `long floating point' offset value to double */
-    M_LFPTOD(ntohl(ptr->offset_int), ntohl(ptr->offset_frc), offset);
-
-    DEBUG("peer %i:\n"
-          "  is_refclock= %d\n"
-          "  refclock_id= %d\n"
-          "  peername   = %s\n"
-          "  srcadr     = 0x%08x\n"
-          "  reach      = 0%03o\n"
-          "  delay      = %f\n"
-          "  offset_int = %i\n"
-          "  offset_frc = %i\n"
-          "  offset     = %f\n"
-          "  dispersion = %f\n",
-          i, is_refclock, (is_refclock > 0) ? refclock_id : 0, peername,
-          ntohl(ptr->srcadr), ptr->reach, ntpd_read_fp(ptr->delay),
-          ntohl(ptr->offset_int), ntohl(ptr->offset_frc), offset,
-          ntpd_read_fp(ptr->dispersion));
-
-    ntpd_submit_reach("time_dispersion", peername, ptr->reach,
-                      ntpd_read_fp(ptr->dispersion));
-
-    /* not the system clock (offset will always be zero) */
-    if (!(is_refclock && refclock_id == 1))
-      ntpd_submit_reach("time_offset", peername, ptr->reach, offset);
-
-    if (!is_refclock) /* not a reference clock */
-      ntpd_submit_reach("delay", peername, ptr->reach,
-                        ntpd_read_fp(ptr->delay));
+    free(ps);
+    ps = NULL;
   }
 
-  free(ps);
-  ps = NULL;
+  if (collect_info_sys)
+  {
+    is      = NULL;
+    is_num  = 0;
+    is_size = 0;
+
+    status = ntpd_do_query (REQ_SYS_INFO,
+             0, 0, NULL, /* request data */
+             &is_num, &is_size, (char **) ((void *) &is), /* response data */
+             sizeof (struct info_sys));
+    if (status != 0)
+    {
+      ERROR ("ntpd plugin: ntpd_do_query (REQ_SYS_INFO) failed with status %i", status);
+      return (status);
+    }
+    else if ((is == NULL) || (is_num == 0) || (is_size == 0))
+    {
+      ERROR ("ntpd plugin: ntpd_do_query returned unexpected data. "
+             "(is = %p; is_num = %i; is_size = %i)",
+             (void *) is, is_num, is_size);
+      return (-1);
+    }
+    DEBUG ("sys_info:\n"
+           "  stratum = %d\n"
+           "  leap = %d\n"
+           (int)is->stratum, (int)is->leap);
+    ntpd_submit ("leap_indicator", "local", (double) is->leap);
+    ntpd_submit ("stratum", "local", (double) is->stratum);
+
+    free (is);
+    is = NULL;
+  }
+
+
 
   return 0;
 } /* int ntpd_read */

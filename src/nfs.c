@@ -43,7 +43,10 @@
 
 #if HAVE_KSTAT_H
 #include <kstat.h>
-#endif
+/* #endif  HAVE_KSTAT_H */
+#elif HAVE_PERFSTAT
+# include <libperfstat.h>
+#endif /* HAVE_PERFSTAT */
 
 static const char *config_keys[] = {"ReportV2", "ReportV3", "ReportV4"};
 static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
@@ -313,6 +316,99 @@ static const char *nfs4_client4x_procedures_names[] = {
 
 #endif
 
+#if HAVE_PERFSTAT
+static const char *nfs4_client_procedures_names[] =
+{
+	"null",
+	"getattr",
+	"setattr",
+	"lookup",
+	"access",
+	"readlink",
+	"read",
+	"write",
+	"create",
+	"mkdir",
+	"symlink",
+	"mknod",
+	"remove",
+	"rmdir",
+	"rename",
+	"link",
+	"readdir",
+	"statfs",
+	"finfo",
+	"commit",
+	"open",
+	"open_confirm",
+	"open_downgrade",
+	"close",
+	"lock",
+	"unlock",
+	"lock_test",
+	"set_clientid",
+	"renew",
+	"client_confirm",
+	"secinfo",
+	"release_lock",
+	"replicate",
+	"pcl_stat",
+	"acl_stat_l",
+	"pcl_stat_l",
+	"acl_read",
+	"pcl_read",
+	"acl_write",
+	"pcl_write",
+	"delegreturn"
+};
+static size_t nfs4_client_procedures_names_num = STATIC_ARRAY_SIZE (nfs4_client_procedures_names);
+
+static const char *nfs4_server_procedures_names[] =
+{
+	"null",
+	"compound",
+	"access",
+	"close",
+	"commit",
+	"create",
+	"delegpurge",
+	"delegreturn",
+	"getattr",
+	"getfh",
+	"link",
+	"lock",
+	"lockt",
+	"locku",
+	"lookup",
+	"lookupp",
+	"nverify",
+	"open",
+	"openattr",
+	"open_confirm",
+	"open_downgrade",
+	"putfh",
+	"putpubfh",
+	"putrootfh",
+	"read",
+	"readdir",
+	"readlink",
+	"remove",
+	"rename",
+	"renew",
+	"restorefh",
+	"savefh",
+	"secinfo",
+	"setattr",
+	"set_clientid",
+	"clientid_confirm",
+	"verify",
+	"write",
+	"release_lock"
+};
+static size_t nfs4_server_procedures_names_num = STATIC_ARRAY_SIZE (nfs4_server_procedures_names);
+
+#endif
+
 #if HAVE_LIBKSTAT
 extern kstat_ctl_t *kc;
 static kstat_t *nfs2_ksp_client;
@@ -372,7 +468,15 @@ static int nfs_init(void) {
 
   return 0;
 } /* int nfs_init */
-#endif
+/* #endif HAVE_LIBKSTAT */
+
+#elif HAVE_PERFSTAT
+static int nfs_init (void)
+{
+	return (0);
+}
+#endif /* HAVE_PERFSTAT */
+
 
 static void nfs_procedures_submit(const char *plugin_instance,
                                   const char **type_instances, value_t *values,
@@ -673,7 +777,247 @@ static int nfs_read(void) {
 
   return 0;
 }
-#endif /* HAVE_LIBKSTAT */
+/* #endif HAVE_LIBKSTAT */
+
+#elif HAVE_PERFSTAT
+static int nfs_read (void)
+{
+	perfstat_protocol_t pinfo;
+	perfstat_id_t protid;
+	int status;
+
+	strcpy(protid.name, "nfsv2");
+	status = perfstat_protocol(&protid, &pinfo, sizeof(perfstat_protocol_t), 1);
+	if (status < 0)
+	{
+		char errbuf[1024];
+		WARNING ("nfs plugin: perfstat_protocol: %s",
+			sstrerror (errno, errbuf, sizeof (errbuf)));
+		return (-1);
+	}
+
+	if (status == 1 && strcmp(protid.name, "nfsv2")!=0)
+	{
+		value_t values[nfs2_procedures_names_num];
+
+		values[0].derive = (derive_t) pinfo.u.nfsv2.client.null;
+		values[1].derive = (derive_t) pinfo.u.nfsv2.client.getattr;
+		values[2].derive = (derive_t) pinfo.u.nfsv2.client.setattr;
+		values[3].derive = (derive_t) pinfo.u.nfsv2.client.root;
+		values[4].derive = (derive_t) pinfo.u.nfsv2.client.lookup;
+		values[5].derive = (derive_t) pinfo.u.nfsv2.client.readlink;
+		values[6].derive = (derive_t) pinfo.u.nfsv2.client.read;
+		values[7].derive = (derive_t) pinfo.u.nfsv2.client.writecache;
+		values[8].derive = (derive_t) pinfo.u.nfsv2.client.write;
+		values[9].derive = (derive_t) pinfo.u.nfsv2.client.create;
+		values[10].derive = (derive_t) pinfo.u.nfsv2.client.remove;
+		values[11].derive = (derive_t) pinfo.u.nfsv2.client.rename;
+		values[12].derive = (derive_t) pinfo.u.nfsv2.client.link;
+		values[13].derive = (derive_t) pinfo.u.nfsv2.client.symlink;
+		values[14].derive = (derive_t) pinfo.u.nfsv2.client.mkdir;
+		values[15].derive = (derive_t) pinfo.u.nfsv2.client.rmdir;
+		values[16].derive = (derive_t) pinfo.u.nfsv2.client.readdir;
+		values[17].derive = (derive_t) pinfo.u.nfsv2.client.statfs;
+
+		nfs_procedures_submit ("v2client", nfs2_procedures_names,
+			values, nfs2_procedures_names_num);
+
+		values[0].derive = (derive_t) pinfo.u.nfsv2.server.null;
+		values[1].derive = (derive_t) pinfo.u.nfsv2.server.getattr;
+		values[2].derive = (derive_t) pinfo.u.nfsv2.server.setattr;
+		values[3].derive = (derive_t) pinfo.u.nfsv2.server.root;
+		values[4].derive = (derive_t) pinfo.u.nfsv2.server.lookup;
+		values[5].derive = (derive_t) pinfo.u.nfsv2.server.readlink;
+		values[6].derive = (derive_t) pinfo.u.nfsv2.server.read;
+		values[7].derive = (derive_t) pinfo.u.nfsv2.server.writecache;
+		values[8].derive = (derive_t) pinfo.u.nfsv2.server.write;
+		values[9].derive = (derive_t) pinfo.u.nfsv2.server.create;
+		values[10].derive = (derive_t) pinfo.u.nfsv2.server.remove;
+		values[11].derive = (derive_t) pinfo.u.nfsv2.server.rename;
+		values[12].derive = (derive_t) pinfo.u.nfsv2.server.link;
+		values[13].derive = (derive_t) pinfo.u.nfsv2.server.symlink;
+		values[14].derive = (derive_t) pinfo.u.nfsv2.server.mkdir;
+		values[15].derive = (derive_t) pinfo.u.nfsv2.server.rmdir;
+		values[16].derive = (derive_t) pinfo.u.nfsv2.server.readdir;
+		values[17].derive = (derive_t) pinfo.u.nfsv2.server.statfs;
+
+		nfs_procedures_submit ("v2server", nfs2_procedures_names,
+			values, nfs2_procedures_names_num);
+	}
+
+	strcpy(protid.name, "nfsv3");
+	status = perfstat_protocol(&protid, &pinfo, sizeof(perfstat_protocol_t), 1);
+	if (status < 0)
+	{
+		char errbuf[1024];
+		WARNING ("nfs plugin: perfstat_protocol: %s",
+			sstrerror (errno, errbuf, sizeof (errbuf)));
+		return (-1);
+	}
+
+	if (status == 1 && strcmp(protid.name, "nfsv3")!=0)
+	{
+		value_t values[nfs3_procedures_names_num];
+
+		values[0].derive = (derive_t) pinfo.u.nfsv3.client.null;
+		values[1].derive = (derive_t) pinfo.u.nfsv3.client.getattr;
+		values[2].derive = (derive_t) pinfo.u.nfsv3.client.setattr;
+		values[3].derive = (derive_t) pinfo.u.nfsv3.client.lookup;
+		values[4].derive = (derive_t) pinfo.u.nfsv3.client.access;
+		values[5].derive = (derive_t) pinfo.u.nfsv3.client.readlink;
+		values[6].derive = (derive_t) pinfo.u.nfsv3.client.read;
+		values[7].derive = (derive_t) pinfo.u.nfsv3.client.write;
+		values[8].derive = (derive_t) pinfo.u.nfsv3.client.create;
+		values[9].derive = (derive_t) pinfo.u.nfsv3.client.mkdir;
+		values[10].derive = (derive_t) pinfo.u.nfsv3.client.symlink;
+		values[11].derive = (derive_t) pinfo.u.nfsv3.client.mknod;
+		values[12].derive = (derive_t) pinfo.u.nfsv3.client.remove;
+		values[13].derive = (derive_t) pinfo.u.nfsv3.client.rmdir;
+		values[14].derive = (derive_t) pinfo.u.nfsv3.client.rename;
+		values[15].derive = (derive_t) pinfo.u.nfsv3.client.link;
+		values[16].derive = (derive_t) pinfo.u.nfsv3.client.readdir;
+		values[17].derive = (derive_t) pinfo.u.nfsv3.client.readdirplus;
+		values[18].derive = (derive_t) pinfo.u.nfsv3.client.fsstat;
+		values[19].derive = (derive_t) pinfo.u.nfsv3.client.fsinfo;
+		values[20].derive = (derive_t) pinfo.u.nfsv3.client.pathconf;
+		values[21].derive = (derive_t) pinfo.u.nfsv3.client.commit;
+
+		nfs_procedures_submit ("v3client", nfs3_procedures_names,
+			values, nfs3_procedures_names_num);
+
+		values[0].derive = (derive_t) pinfo.u.nfsv3.server.null;
+		values[1].derive = (derive_t) pinfo.u.nfsv3.server.getattr;
+		values[2].derive = (derive_t) pinfo.u.nfsv3.server.setattr;
+		values[3].derive = (derive_t) pinfo.u.nfsv3.server.lookup;
+		values[4].derive = (derive_t) pinfo.u.nfsv3.server.access;
+		values[5].derive = (derive_t) pinfo.u.nfsv3.server.readlink;
+		values[6].derive = (derive_t) pinfo.u.nfsv3.server.read;
+		values[7].derive = (derive_t) pinfo.u.nfsv3.server.write;
+		values[8].derive = (derive_t) pinfo.u.nfsv3.server.create;
+		values[9].derive = (derive_t) pinfo.u.nfsv3.server.mkdir;
+		values[10].derive = (derive_t) pinfo.u.nfsv3.server.symlink;
+		values[11].derive = (derive_t) pinfo.u.nfsv3.server.mknod;
+		values[12].derive = (derive_t) pinfo.u.nfsv3.server.remove;
+		values[13].derive = (derive_t) pinfo.u.nfsv3.server.rmdir;
+		values[14].derive = (derive_t) pinfo.u.nfsv3.server.rename;
+		values[15].derive = (derive_t) pinfo.u.nfsv3.server.link;
+		values[16].derive = (derive_t) pinfo.u.nfsv3.server.readdir;
+		values[17].derive = (derive_t) pinfo.u.nfsv3.server.readdirplus;
+		values[18].derive = (derive_t) pinfo.u.nfsv3.server.fsstat;
+		values[19].derive = (derive_t) pinfo.u.nfsv3.server.fsinfo;
+		values[20].derive = (derive_t) pinfo.u.nfsv3.server.pathconf;
+		values[21].derive = (derive_t) pinfo.u.nfsv3.server.commit;
+
+		nfs_procedures_submit ("v3server", nfs3_procedures_names,
+			values, nfs3_procedures_names_num);
+	}
+
+	strcpy(protid.name, "nfsv4");
+	status = perfstat_protocol(&protid, &pinfo, sizeof(perfstat_protocol_t), 1);
+	if (status < 0)
+	{
+		char errbuf[1024];
+		WARNING ("nfs plugin: perfstat_protocol: %s",
+			sstrerror (errno, errbuf, sizeof (errbuf)));
+		return (-1);
+	}
+
+	if (status == 1 && strcmp(protid.name, "nfsv4")!=0)
+	{
+		value_t cvalues[nfs4_client_procedures_names_num];
+		value_t svalues[nfs4_server_procedures_names_num];
+
+		cvalues[0].derive = (derive_t) pinfo.u.nfsv4.client.null;
+		cvalues[1].derive = (derive_t) pinfo.u.nfsv4.client.getattr;
+		cvalues[2].derive = (derive_t) pinfo.u.nfsv4.client.setattr;
+		cvalues[3].derive = (derive_t) pinfo.u.nfsv4.client.lookup;
+		cvalues[4].derive = (derive_t) pinfo.u.nfsv4.client.access;
+		cvalues[5].derive = (derive_t) pinfo.u.nfsv4.client.readlink;
+		cvalues[6].derive = (derive_t) pinfo.u.nfsv4.client.read;
+		cvalues[7].derive = (derive_t) pinfo.u.nfsv4.client.write;
+		cvalues[8].derive = (derive_t) pinfo.u.nfsv4.client.create;
+		cvalues[9].derive = (derive_t) pinfo.u.nfsv4.client.mkdir;
+		cvalues[10].derive = (derive_t) pinfo.u.nfsv4.client.symlink;
+		cvalues[11].derive = (derive_t) pinfo.u.nfsv4.client.mknod;
+		cvalues[12].derive = (derive_t) pinfo.u.nfsv4.client.remove;
+		cvalues[13].derive = (derive_t) pinfo.u.nfsv4.client.rmdir;
+		cvalues[14].derive = (derive_t) pinfo.u.nfsv4.client.rename;
+		cvalues[15].derive = (derive_t) pinfo.u.nfsv4.client.link;
+		cvalues[16].derive = (derive_t) pinfo.u.nfsv4.client.readdir;
+		cvalues[17].derive = (derive_t) pinfo.u.nfsv4.client.statfs;
+		cvalues[18].derive = (derive_t) pinfo.u.nfsv4.client.finfo;
+		cvalues[19].derive = (derive_t) pinfo.u.nfsv4.client.commit;
+		cvalues[20].derive = (derive_t) pinfo.u.nfsv4.client.open;
+		cvalues[21].derive = (derive_t) pinfo.u.nfsv4.client.open_confirm;
+		cvalues[22].derive = (derive_t) pinfo.u.nfsv4.client.open_downgrade;
+		cvalues[23].derive = (derive_t) pinfo.u.nfsv4.client.close;
+		cvalues[24].derive = (derive_t) pinfo.u.nfsv4.client.lock;
+		cvalues[25].derive = (derive_t) pinfo.u.nfsv4.client.unlock;
+		cvalues[26].derive = (derive_t) pinfo.u.nfsv4.client.lock_test;
+		cvalues[27].derive = (derive_t) pinfo.u.nfsv4.client.set_clientid;
+		cvalues[28].derive = (derive_t) pinfo.u.nfsv4.client.renew;
+		cvalues[29].derive = (derive_t) pinfo.u.nfsv4.client.client_confirm;
+		cvalues[30].derive = (derive_t) pinfo.u.nfsv4.client.secinfo;
+		cvalues[31].derive = (derive_t) pinfo.u.nfsv4.client.release_lock;
+		cvalues[32].derive = (derive_t) pinfo.u.nfsv4.client.replicate;
+		cvalues[33].derive = (derive_t) pinfo.u.nfsv4.client.pcl_stat;
+		cvalues[34].derive = (derive_t) pinfo.u.nfsv4.client.acl_stat_l;
+		cvalues[35].derive = (derive_t) pinfo.u.nfsv4.client.pcl_stat_l;
+		cvalues[36].derive = (derive_t) pinfo.u.nfsv4.client.acl_read;
+		cvalues[37].derive = (derive_t) pinfo.u.nfsv4.client.pcl_read;
+		cvalues[38].derive = (derive_t) pinfo.u.nfsv4.client.acl_write;
+		cvalues[39].derive = (derive_t) pinfo.u.nfsv4.client.pcl_write;
+		cvalues[40].derive = (derive_t) pinfo.u.nfsv4.client.delegreturn;
+
+		nfs_procedures_submit ("v4client", nfs4_client_procedures_names,
+			cvalues, nfs4_client_procedures_names_num);
+
+		svalues[0].derive = (derive_t) pinfo.u.nfsv4.server.null;
+		svalues[1].derive = (derive_t) pinfo.u.nfsv4.server.compound;
+		svalues[2].derive = (derive_t) pinfo.u.nfsv4.server.access;
+		svalues[3].derive = (derive_t) pinfo.u.nfsv4.server.close;
+		svalues[4].derive = (derive_t) pinfo.u.nfsv4.server.commit;
+		svalues[5].derive = (derive_t) pinfo.u.nfsv4.server.create;
+		svalues[6].derive = (derive_t) pinfo.u.nfsv4.server.delegpurge;
+		svalues[7].derive = (derive_t) pinfo.u.nfsv4.server.delegreturn;
+		svalues[8].derive = (derive_t) pinfo.u.nfsv4.server.getattr;
+		svalues[9].derive = (derive_t) pinfo.u.nfsv4.server.getfh;
+		svalues[10].derive = (derive_t) pinfo.u.nfsv4.server.link;
+		svalues[11].derive = (derive_t) pinfo.u.nfsv4.server.lock;
+		svalues[12].derive = (derive_t) pinfo.u.nfsv4.server.lockt;
+		svalues[13].derive = (derive_t) pinfo.u.nfsv4.server.locku;
+		svalues[14].derive = (derive_t) pinfo.u.nfsv4.server.lookup;
+		svalues[15].derive = (derive_t) pinfo.u.nfsv4.server.lookupp;
+		svalues[16].derive = (derive_t) pinfo.u.nfsv4.server.nverify;
+		svalues[17].derive = (derive_t) pinfo.u.nfsv4.server.open;
+		svalues[18].derive = (derive_t) pinfo.u.nfsv4.server.openattr;
+		svalues[19].derive = (derive_t) pinfo.u.nfsv4.server.open_confirm;
+		svalues[20].derive = (derive_t) pinfo.u.nfsv4.server.open_downgrade;
+		svalues[21].derive = (derive_t) pinfo.u.nfsv4.server.putfh;
+		svalues[22].derive = (derive_t) pinfo.u.nfsv4.server.putpubfh;
+		svalues[23].derive = (derive_t) pinfo.u.nfsv4.server.putrootfh;
+		svalues[24].derive = (derive_t) pinfo.u.nfsv4.server.read;
+		svalues[25].derive = (derive_t) pinfo.u.nfsv4.server.readdir;
+		svalues[26].derive = (derive_t) pinfo.u.nfsv4.server.readlink;
+		svalues[27].derive = (derive_t) pinfo.u.nfsv4.server.remove;
+		svalues[28].derive = (derive_t) pinfo.u.nfsv4.server.rename;
+		svalues[29].derive = (derive_t) pinfo.u.nfsv4.server.renew;
+		svalues[30].derive = (derive_t) pinfo.u.nfsv4.server.restorefh;
+		svalues[31].derive = (derive_t) pinfo.u.nfsv4.server.savefh;
+		svalues[32].derive = (derive_t) pinfo.u.nfsv4.server.secinfo;
+		svalues[33].derive = (derive_t) pinfo.u.nfsv4.server.setattr;
+		svalues[34].derive = (derive_t) pinfo.u.nfsv4.server.set_clientid;
+		svalues[35].derive = (derive_t) pinfo.u.nfsv4.server.clientid_confirm;
+		svalues[36].derive = (derive_t) pinfo.u.nfsv4.server.verify;
+		svalues[37].derive = (derive_t) pinfo.u.nfsv4.server.write;
+		svalues[38].derive = (derive_t) pinfo.u.nfsv4.server.release_lock;
+
+		nfs_procedures_submit ("v4server", nfs4_server_procedures_names,
+			svalues, nfs4_server_procedures_names_num);
+	}
+	return (0);
+}
+#endif /* HAVE_PERFSTAT */
 
 void module_register(void) {
   plugin_register_config("nfs", nfs_config, config_keys, config_keys_num);

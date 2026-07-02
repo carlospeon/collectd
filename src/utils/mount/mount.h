@@ -82,6 +82,7 @@ struct _cu_mount_t {
   char *device;      /* "none" or "proc" or "/dev/hda1" */
   char *type;        /* "sysfs" or "ext3" */
   char *options;     /* "rw,noatime,commit=600,quota,grpquota" */
+  bool match;        /* true if pass the match list */
   cu_mount_t *next;
 };
 

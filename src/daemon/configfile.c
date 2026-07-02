@@ -110,11 +110,13 @@ static cf_global_option_t cf_global_options[] = {
     {"WriteThreads", NULL, 0, "5"},
     {"WriteQueueLimitHigh", NULL, 0, NULL},
     {"WriteQueueLimitLow", NULL, 0, NULL},
+    {"NotificationThreads", NULL, 0, "1"},
     {"Timeout", NULL, 0, "2"},
     {"AutoLoadPlugin", NULL, 0, "false"},
     {"CollectInternalStats", NULL, 0, "false"},
     {"PreCacheChain", NULL, 0, "PreCache"},
     {"PostCacheChain", NULL, 0, "PostCache"},
+    {"NormalizeTime", NULL, 0, "false"},
     {"MaxReadInterval", NULL, 0, "86400"}};
 static int cf_global_options_num = STATIC_ARRAY_SIZE(cf_global_options);
 

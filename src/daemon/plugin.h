@@ -43,13 +43,11 @@
 #define DS_TYPE_ABSOLUTE 3
 
 #define DS_TYPE_TO_STRING(t)                                                   \
-  (t == DS_TYPE_COUNTER)                                                       \
-      ? "counter"                                                              \
-      : (t == DS_TYPE_GAUGE)                                                   \
-            ? "gauge"                                                          \
-            : (t == DS_TYPE_DERIVE)                                            \
-                  ? "derive"                                                   \
-                  : (t == DS_TYPE_ABSOLUTE) ? "absolute" : "unknown"
+  (t == DS_TYPE_COUNTER)    ? "counter"                                        \
+  : (t == DS_TYPE_GAUGE)    ? "gauge"                                          \
+  : (t == DS_TYPE_DERIVE)   ? "derive"                                         \
+  : (t == DS_TYPE_ABSOLUTE) ? "absolute"                                       \
+                            : "unknown"
 
 #ifndef LOG_ERR
 #define LOG_ERR 3
@@ -188,10 +186,24 @@ struct plugin_ctx_s {
 };
 typedef struct plugin_ctx_s plugin_ctx_t;
 
+typedef struct write_batch_s {
+  value_list_t *vl;
+  plugin_ctx_t ctx;
+  struct write_batch_s *next;
+} write_batch_t;
+
+typedef struct write_queue_s {
+  write_batch_t *batch_head;
+  write_batch_t *batch_tail;
+  long batch_length;
+  struct write_queue_s *next;
+} write_queue_t;
+
 /*
  * Callback types
  */
 typedef int (*plugin_init_cb)(void);
+typedef int (*plugin_thread_start_cb)(user_data_t *);
 typedef int (*plugin_read_cb)(user_data_t *);
 typedef int (*plugin_write_cb)(const data_set_t *, const value_list_t *,
                                user_data_t *);
@@ -207,6 +219,7 @@ typedef int (*plugin_missing_cb)(const value_list_t *, user_data_t *);
  */
 typedef int (*plugin_cache_event_cb)(cache_event_t *, user_data_t *);
 typedef void (*plugin_log_cb)(int severity, const char *message, user_data_t *);
+typedef int (*plugin_thread_stop_cb)(user_data_t *);
 typedef int (*plugin_shutdown_cb)(void);
 typedef int (*plugin_notification_cb)(const notification_t *, user_data_t *);
 /*
@@ -297,6 +310,9 @@ int plugin_register_config(const char *name,
 int plugin_register_complex_config(const char *type,
                                    int (*callback)(oconfig_item_t *));
 int plugin_register_init(const char *name, plugin_init_cb callback);
+int plugin_register_thread_start(const char *name,
+                                 plugin_thread_start_cb callback,
+                                 user_data_t const *user_data);
 int plugin_register_read(const char *name, int (*callback)(void));
 /* "user_data" will be freed automatically, unless
  * "plugin_register_complex_read" returns an error (non-zero). */
@@ -312,7 +328,12 @@ int plugin_register_missing(const char *name, plugin_missing_cb callback,
 int plugin_register_cache_event(const char *name,
                                 plugin_cache_event_cb callback,
                                 user_data_t const *ud);
+int plugin_register_thread_stop(const char *name,
+                                plugin_thread_stop_cb callback,
+                                user_data_t const *user_data);
 int plugin_register_shutdown(const char *name, plugin_shutdown_cb callback);
+int plugin_register_shutdown_first(const char *name,
+                                   plugin_shutdown_cb callback);
 int plugin_register_data_set(const data_set_t *ds);
 int plugin_register_log(const char *name, plugin_log_cb callback,
                         user_data_t const *user_data);
@@ -323,12 +344,14 @@ int plugin_register_notification(const char *name,
 int plugin_unregister_config(const char *name);
 int plugin_unregister_complex_config(const char *name);
 int plugin_unregister_init(const char *name);
+int plugin_unregister_thread_start(const char *name);
 int plugin_unregister_read(const char *name);
 int plugin_unregister_read_group(const char *group);
 int plugin_unregister_write(const char *name);
 int plugin_unregister_flush(const char *name);
 int plugin_unregister_missing(const char *name);
 int plugin_unregister_cache_event(const char *name);
+int plugin_unregister_thread_stop(const char *name);
 int plugin_unregister_shutdown(const char *name);
 int plugin_unregister_data_set(const char *name);
 int plugin_unregister_log(const char *name);
@@ -361,6 +384,36 @@ void plugin_log_available_writers(void);
  *              function.
  */
 int plugin_dispatch_values(value_list_t const *vl);
+
+/*
+ * NAME
+ *  plugin_init_root_write_queue
+ *
+ * DESCRIPTION
+ *  This function allocates and initizlize a write queue element (which is
+ * a sub queue or batch of values that will be dequeued toguether).
+ *
+ * ARGUMENTS
+ *  none
+ */
+write_queue_t *plugin_init_write_queue(void);
+
+/*
+ * NAME
+ *  plugin_dispatch_value_queue
+ *
+ * DESCRIPTION
+ *  This function is called by reading processes with the values they've
+ *  aquired.
+ *
+ * ARGUMENTS
+ *  `root_head' head of the queue with subqueues to dispatch.
+ *  `root_tail' tail of the queue with subqueues to dispatch.
+ *  `length' length of the queue with subqueues to dispatch.
+ *  `sum_length' sum of lengths of all subqueues to dispatch.
+ */
+int plugin_dispatch_value_queue(write_queue_t *head, write_queue_t *tail,
+                                long length, long batch_sum_length);
 
 /*
  * NAME
@@ -397,6 +450,8 @@ int plugin_dispatch_values(value_list_t const *vl);
 __attribute__((sentinel)) int plugin_dispatch_multivalue(value_list_t const *vl,
                                                          bool store_percentage,
                                                          int store_type, ...);
+
+value_list_t *plugin_value_list_clone(value_list_t const *vl_orig);
 
 int plugin_dispatch_missing(const value_list_t *vl);
 void plugin_dispatch_cache_event(enum cache_event_type_e event_type,
@@ -449,6 +504,9 @@ int plugin_notification_meta_copy(notification_t *dst,
 
 int plugin_notification_meta_free(notification_meta_t *n);
 
+int plugin_notification_meta_get_boolean(notification_meta_t *n,
+                                         const char *name, bool *value);
+
 /*
  * Plugin context management.
  */
@@ -468,6 +526,8 @@ plugin_ctx_t plugin_set_ctx(plugin_ctx_t ctx);
  *  everything else fails, it will fall back to 10 seconds.
  */
 cdtime_t plugin_get_interval(void);
+
+size_t plugin_get_write_threads_num(void);
 
 /*
  * Context-aware thread management.

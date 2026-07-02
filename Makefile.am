@@ -1008,6 +1008,20 @@ disk_la_LIBADD += -lperfstat
 endif
 endif
 
+if BUILD_PLUGIN_DISKADAPTER
+pkglib_LTLIBRARIES += diskadapter.la
+diskadapter_la_SOURCES = src/diskadapter.c
+diskadapter_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+diskadapter_la_LIBADD = -lperfstat
+endif
+
+if BUILD_PLUGIN_DISKPATH
+pkglib_LTLIBRARIES += diskpath.la
+diskpath_la_SOURCES = src/diskpath.c
+diskpath_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+diskpath_la_LIBADD = -lperfstat
+endif
+
 if BUILD_PLUGIN_DNS
 pkglib_LTLIBRARIES += dns.la
 dns_la_SOURCES = \
@@ -1081,6 +1095,10 @@ if BUILD_PLUGIN_ETHSTAT
 pkglib_LTLIBRARIES += ethstat.la
 ethstat_la_SOURCES = src/ethstat.c
 ethstat_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+ethstat_la_LIBADD =
+if BUILD_WITH_PERFSTAT
+ethstat_la_LIBADD += -lperfstat
+endif
 endif
 
 if BUILD_PLUGIN_FHCOUNT
@@ -1135,6 +1153,20 @@ nodist_grpc_la_SOURCES = \
 grpc_la_CPPFLAGS = $(AM_CPPFLAGS) $(BUILD_WITH_LIBGRPCPP_CPPFLAGS) $(BUILD_WITH_LIBPROTOBUF_CPPFLAGS)
 grpc_la_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBGRPCPP_LDFLAGS) $(BUILD_WITH_LIBPROTOBUF_LDFLAGS)
 grpc_la_LIBADD = $(BUILD_WITH_LIBGRPCPP_LIBS) $(BUILD_WITH_LIBPROTOBUF_LIBS)
+endif
+
+if BUILD_PLUGIN_HBA
+pkglib_LTLIBRARIES += hba.la
+hba_la_SOURCES = src/hba.c
+hba_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+hba_la_LIBADD =
+if BUILD_WITH_LIBODM
+hba_la_LIBADD += -lodm -lcfg
+else
+if BUILD_WITH_LIBHBAAPI
+hba_la_LIBADD += -lHBAAPI
+endif
+endif
 endif
 
 if BUILD_PLUGIN_HDDTEMP
@@ -1524,6 +1556,14 @@ mmc_la_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBUDEV_LDFLAGS)
 mmc_la_LIBADD = libignorelist.la $(BUILD_WITH_LIBUDEV_LIBS)
 endif
 
+if BUILD_PLUGIN_MONGODB
+pkglib_LTLIBRARIES += mongodb.la
+mongodb_la_SOURCES = src/mongodb.c
+mongodb_la_CFLAGS = $(AM_CFLAGS) $(BUILD_WITH_LIBMONGOC_CFLAGS)
+mongodb_la_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBMONGOC_LDFLAGS)
+mongodb_la_LIBADD = $(BUILD_WITH_LIBMONGOC_LIBS)
+endif
+
 if BUILD_PLUGIN_MULTIMETER
 pkglib_LTLIBRARIES += multimeter.la
 multimeter_la_SOURCES = src/multimeter.c
@@ -1610,6 +1650,10 @@ endif
 if BUILD_PLUGIN_NFS
 pkglib_LTLIBRARIES += nfs.la
 nfs_la_SOURCES = src/nfs.c
+nfs_la_LIBADD =
+if BUILD_WITH_PERFSTAT
+nfs_la_LIBADD += -lperfstat
+endif
 nfs_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 endif
 
@@ -1619,6 +1663,14 @@ nginx_la_SOURCES = src/nginx.c
 nginx_la_CFLAGS = $(AM_CFLAGS) $(BUILD_WITH_LIBCURL_CFLAGS)
 nginx_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 nginx_la_LIBADD = $(BUILD_WITH_LIBCURL_LIBS)
+endif
+
+if BUILD_PLUGIN_NOTIFY_DBI
+pkglib_LTLIBRARIES += notify_dbi.la
+notify_dbi_la_SOURCES = src/notify_dbi.c
+notify_dbi_la_CPPFLAGS = $(AM_CPPFLAGS) $(BUILD_WITH_LIBDBI_CPPFLAGS)
+notify_dbi_la_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBDBI_LDFLAGS)
+notify_dbi_la_LIBADD = $(BUILD_WITH_LIBDBI_LIBS)
 endif
 
 if BUILD_PLUGIN_NOTIFY_DESKTOP
@@ -1643,6 +1695,14 @@ notify_nagios_la_SOURCES = src/notify_nagios.c
 notify_nagios_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 endif
 
+if BUILD_PLUGIN_NOTIFY_SNMP
+pkglib_LTLIBRARIES += notify_snmp.la
+notify_snmp_la_SOURCES = src/notify_snmp.c
+notify_snmp_la_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_LIBNETSNMP_LDFLAGS)
+notify_snmp_la_CFLAGS = $(AM_CPPFLAGS) $(BUILD_WITH_LIBNETSNMP_CPPFLAGS)
+notify_snmp_la_LIBADD = $(BUILD_WITH_LIBNETSNMP_LIBS)
+endif
+
 if BUILD_PLUGIN_NTPD
 pkglib_LTLIBRARIES += ntpd.la
 ntpd_la_SOURCES = src/ntpd.c
@@ -1665,6 +1725,17 @@ nut_la_SOURCES = src/nut.c
 nut_la_CFLAGS = $(AM_CFLAGS) $(BUILD_WITH_LIBUPSCLIENT_CFLAGS)
 nut_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 nut_la_LIBADD = $(BUILD_WITH_LIBUPSCLIENT_LIBS)
+endif
+
+if BUILD_PLUGIN_ODBC
+pkglib_LTLIBRARIES += odbc.la
+odbc_la_SOURCES = \
+	src/odbc.c \
+	src/utils/db_query/db_query.c \
+	src/utils/db_query/db_query.h
+odbc_la_CPPFLAGS = $(AM_CPPFLAGS) $(BUILD_WITH_UNIXODBC_CPPFLAGS)
+odbc_la_LDFLAGS = $(PLUGIN_LDFLAGS) $(BUILD_WITH_UNIXODBC_LDFLAGS)
+odbc_la_LIBADD = $(BUILD_WITH_UNIXODBC_LIBS)
 endif
 
 if BUILD_PLUGIN_OLSRD
@@ -2104,7 +2175,16 @@ if BUILD_PLUGIN_TAPE
 pkglib_LTLIBRARIES += tape.la
 tape_la_SOURCES = src/tape.c
 tape_la_LDFLAGS = $(PLUGIN_LDFLAGS)
-tape_la_LIBADD = -lkstat -ldevinfo
+tape_la_LIBADD =
+if BUILD_WITH_LIBKSTAT
+tape_la_LIBADD += -lkstat
+endif
+if BUILD_WITH_LIBDEVINFO
+tape_la_LIBADD += -ldevinfo
+endif
+if BUILD_WITH_PERFSTAT
+tape_la_LIBADD += -lperfstat
+endif
 endif
 
 if BUILD_PLUGIN_TARGET_NOTIFICATION
@@ -2269,6 +2349,9 @@ if BUILD_PLUGIN_VMEM
 pkglib_LTLIBRARIES += vmem.la
 vmem_la_SOURCES = src/vmem.c
 vmem_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+if BUILD_WITH_PERFSTAT
+vmem_la_LIBADD = -lperfstat
+endif
 endif
 
 if BUILD_PLUGIN_VSERVER
@@ -2283,11 +2366,25 @@ wireless_la_SOURCES = src/wireless.c
 wireless_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 endif
 
+if BUILD_PLUGIN_WPAR
+pkglib_LTLIBRARIES += wpar.la
+wpar_la_SOURCES = src/wpar.c
+wpar_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+wpar_la_LIBADD = -lperfstat
+endif
+
 if BUILD_PLUGIN_WRITE_GRAPHITE
 pkglib_LTLIBRARIES += write_graphite.la
 write_graphite_la_SOURCES = src/write_graphite.c
 write_graphite_la_LDFLAGS = $(PLUGIN_LDFLAGS)
 write_graphite_la_LIBADD = libformat_graphite.la
+endif
+
+if BUILD_PLUGIN_WLM
+pkglib_LTLIBRARIES += wlm.la
+wlm_la_SOURCES = src/wlm.c
+wlm_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+wlm_la_LIBADD = -lperfstat
 endif
 
 if BUILD_PLUGIN_WRITE_HTTP
@@ -2300,7 +2397,8 @@ write_http_la_SOURCES = \
 	src/utils/format_kairosdb/format_kairosdb.h
 write_http_la_CFLAGS = $(AM_CFLAGS) $(BUILD_WITH_LIBCURL_CFLAGS)
 write_http_la_LDFLAGS = $(PLUGIN_LDFLAGS)
-write_http_la_LIBADD = libformat_influxdb.la libformat_json.la $(BUILD_WITH_LIBCURL_LIBS)
+write_http_la_LIBADD = libformat_json.la libformat_influxdb.la \
+	libformat_graphite.la $(BUILD_WITH_LIBCURL_LIBS)
 endif
 
 if BUILD_PLUGIN_WRITE_INFLUXDB_UDP
@@ -2513,6 +2611,7 @@ uninstall-hook:
 	rm -f $(DESTDIR)$(sysconfdir)/collectd.conf
 	rm -f $(DESTDIR)$(cpkgdatadir)/postgresql_default.conf;
 
+if BUILD_PLUGIN_PERL
 all-local: @PERL_BINDINGS@
 
 install-exec-local:
@@ -2553,7 +2652,7 @@ buildperl/Makefile.PL: .perl-directory-stamp $(top_builddir)/config.status
 	touch $@
 
 .PHONY: perl
-
+endif
 
 if BUILD_WITH_JAVA
 dist_noinst_JAVA = \

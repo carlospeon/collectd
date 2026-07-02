@@ -29,6 +29,8 @@
 #include "utils/common/common.h"
 #include "utils_complain.h"
 
+#include <stddef.h>
+
 #if HAVE_SYS_IOCTL_H
 #include <sys/ioctl.h>
 #endif
@@ -41,6 +43,58 @@
 #if HAVE_LINUX_ETHTOOL_H
 #include <linux/ethtool.h>
 #endif
+
+#if HAVE_PERFSTAT
+# include <libperfstat.h>
+#endif
+
+#if HAVE_PERFSTAT
+struct netadapter_field {
+  char *field;
+  size_t offset;
+};
+typedef struct netadapter_field netadapter_field_t;
+
+static netadapter_field_t netadapter_fields[] = {
+  { "tx_packets", offsetof(perfstat_netadapter_t, tx_packets) },
+  { "tx_bytes", offsetof(perfstat_netadapter_t, tx_bytes) },
+  { "tx_interrupts", offsetof(perfstat_netadapter_t, tx_interrupts) },
+  { "tx_errors", offsetof(perfstat_netadapter_t, tx_errors) },
+  { "tx_packets_dropped", offsetof(perfstat_netadapter_t, tx_packets_dropped) },
+  { "tx_queue_size", offsetof(perfstat_netadapter_t, tx_queue_size) },
+  { "tx_queue_len", offsetof(perfstat_netadapter_t, tx_queue_len) },
+  { "tx_queue_overflow", offsetof(perfstat_netadapter_t, tx_queue_overflow) },
+  { "tx_broadcast_packets", offsetof(perfstat_netadapter_t, tx_broadcast_packets) },
+  { "tx_multicast_packets", offsetof(perfstat_netadapter_t, tx_multicast_packets) },
+  { "tx_carrier_sense", offsetof(perfstat_netadapter_t, tx_carrier_sense) },
+  { "tx_DMA_underrun", offsetof(perfstat_netadapter_t, tx_DMA_underrun) },
+  { "tx_lost_CTS_errors", offsetof(perfstat_netadapter_t, tx_lost_CTS_errors) },
+  { "tx_max_collision_errors", offsetof(perfstat_netadapter_t, tx_max_collision_errors) },
+  { "tx_late_collision_errors", offsetof(perfstat_netadapter_t, tx_late_collision_errors) },
+  { "tx_deferred", offsetof(perfstat_netadapter_t, tx_deferred) },
+  { "tx_timeout_errors", offsetof(perfstat_netadapter_t, tx_timeout_errors) },
+  { "tx_single_collision_count", offsetof(perfstat_netadapter_t, tx_single_collision_count) },
+  { "tx_multiple_collision_count", offsetof(perfstat_netadapter_t, tx_multiple_collision_count) },
+  { "rx_packets", offsetof(perfstat_netadapter_t, rx_packets) },
+  { "rx_bytes", offsetof(perfstat_netadapter_t, rx_bytes) },
+  { "rx_interrupts", offsetof(perfstat_netadapter_t, rx_interrupts) },
+  { "rx_errors", offsetof(perfstat_netadapter_t, rx_errors) },
+  { "rx_packets_dropped", offsetof(perfstat_netadapter_t, rx_packets_dropped) },
+  { "rx_bad_packets", offsetof(perfstat_netadapter_t, rx_bad_packets) },
+  { "rx_multicast_packets", offsetof(perfstat_netadapter_t, rx_multicast_packets) },
+  { "rx_broadcast_packets", offsetof(perfstat_netadapter_t, rx_broadcast_packets) },
+  { "rx_CRC_errors", offsetof(perfstat_netadapter_t, rx_CRC_errors) },
+  { "rx_DMA_overrun", offsetof(perfstat_netadapter_t, rx_DMA_overrun) },
+  { "rx_alignment_errors", offsetof(perfstat_netadapter_t, rx_alignment_errors) },
+  { "rx_noresource_errors", offsetof(perfstat_netadapter_t, rx_noresource_errors) },
+  { "rx_collision_errors", offsetof(perfstat_netadapter_t, rx_collision_errors) },
+  { "rx_packet_tooshort_errors", offsetof(perfstat_netadapter_t, rx_packet_tooshort_errors) },
+  { "rx_packet_toolong_errors", offsetof(perfstat_netadapter_t, rx_packet_toolong_errors) },
+  { "rx_packets_discardedbyadapter", offsetof(perfstat_netadapter_t, rx_packets_discardedbyadapter) }
+};
+
+static int netadapter_fields_size = STATIC_ARRAY_SIZE(netadapter_fields);
+#endif /* HAVE_PERFSTAT */
 
 struct value_map_s {
   char type[DATA_MAX_NAME_LEN];
@@ -193,7 +247,9 @@ static void ethstat_submit_value(const char *device, const char *type_instance,
   plugin_dispatch_values(&vl);
 }
 
-static int ethstat_read_interface(char *device) {
+#ifdef KERNEL_LINUX
+static int ethstat_read_interface (char *device) /* {{{ ethstat_read_interface */
+{
   int fd;
   struct ethtool_gstrings *strings;
   struct ethtool_stats *stats;
@@ -288,6 +344,44 @@ static int ethstat_read_interface(char *device) {
 
   return 0;
 } /* }}} ethstat_read_interface */
+/* #endif KERNEL_LINUX */
+#elif HAVE_PERFSTAT
+static int ethstat_read_interface (char *device) /* {{{ ethstat_read_interface */
+{
+  int ret, i;
+  perfstat_id_t id;
+  perfstat_netadapter_t stat;
+
+  sstrncpy(id.name , device, IDENTIFIER_LENGTH);
+
+  ret = perfstat_netadapter(&id, &stat, sizeof(perfstat_netadapter_t), 1);
+  if (ret < 0)
+  {
+    char errbuf[1024];
+    WARNING ("ethstat plugin: perfstat_netadapter (adapter=%s): %s",
+      device, sstrerror (errno, errbuf, sizeof (errbuf)));
+    return (-1);
+  }
+
+  if (ret != 1)
+  {
+    WARNING ("ethstat plugin: perfstat_netadapter (adapter=%s): not found",
+      device);
+    return (-1);
+  }
+
+  for (i=0; i < netadapter_fields_size; i++) 
+  {
+    u_longlong_t counter;
+
+    counter = *(u_longlong_t *)((char *)&stat + netadapter_fields[i].offset);
+    ethstat_submit_value(device, netadapter_fields[i].field, counter);
+  }
+
+  return (0);
+} /* }}} ethstat_read_interface */
+#endif
+
 
 static int ethstat_read(void) {
   for (size_t i = 0; i < interfaces_num; i++)

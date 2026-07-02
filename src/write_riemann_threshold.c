@@ -73,7 +73,7 @@ static int ut_check_one_data_source(
 
   /* XXX: This is an experimental code, not optimized, not fast, not reliable,
    * and probably, do not work as you expect. Enjoy! :D */
-  prev_state = uc_get_state(vl);
+  prev_state = uc_get_state(ds, vl);
   if ((th->hysteresis > 0) && (prev_state != STATE_OKAY) &&
       (prev_state != STATE_UNKNOWN)) {
     switch (prev_state) {
@@ -195,11 +195,7 @@ int write_riemann_threshold_check(const data_set_t *ds, const value_list_t *vl,
   if (threshold_tree == NULL)
     return 0;
 
-  /* Is this lock really necessary? So far, thresholds are only inserted at
-   * startup. -octo */
-  pthread_mutex_lock(&threshold_lock);
   th = threshold_search(vl);
-  pthread_mutex_unlock(&threshold_lock);
   if (th == NULL)
     return 0;
 

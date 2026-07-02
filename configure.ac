@@ -1914,9 +1914,13 @@ Collectd additional packages:])
 if test "x$ac_system" = "xAIX"; then
   with_perfstat="yes"
   with_procinfo="yes"
+  with_wlm="yes"
+  with_libodm="yes"
 else
   with_perfstat="no (AIX only)"
   with_procinfo="no (AIX only)"
+  with_wlm="no (AIX only)"
+  with_libodm="no (AIX only)"
 fi
 
 if test "x$with_perfstat" = "xyes"; then
@@ -1947,6 +1951,24 @@ if test "x$with_procinfo" = "xyes"; then
     [with_procinfo="no (procinfo.h not found)"]
   )
 fi
+
+if test "x$with_wlm" = "xyes"
+then
+        AC_CHECK_LIB(wlm, wlm_initialize,[with_wlm="yes"], [with_wlm="no (sys/wlm.h not found)"])
+fi
+if test "x$with_wlm" = "xyes"
+then
+        AC_DEFINE(HAVE_WLM, 1, [Define to 1 if you have the 'wlm' library (-lwlm)])
+fi
+AM_CONDITIONAL(BUILD_WITH_WLM, test "x$with_wlm" = "xyes")
+
+if test "x$with_libodm" = "xyes"
+then
+       AC_CHECK_LIB(odm, odm_initialize, [with_libodm="yes"], [with_libodm="no (odm not found)"], [])
+       AC_CHECK_LIB(cfg, getattr, [with_libodm="yes"], [with_libodm="no (cfg not found)"], [])
+       AC_CHECK_HEADERS(odmi.h sys/cfgodm.h,, [with_libodm="no (odmi.h or sys/cfgodm.h not found)"])
+fi
+AM_CONDITIONAL(BUILD_WITH_LIBODM, test "x$with_libodm" = "xyes")
 
 if test "x$ac_system" = "xSolaris"; then
   with_kstat="yes"
@@ -2241,7 +2263,7 @@ LDFLAGS="$LDFLAGS $LIBREDFISH_LDFLAGS"
 
 if test "x$with_libredfish" = "xyes"; then
   if test "x$LIBREDFISH_CPPFLAGS" != "x"; then
-    AC_MSG_NOTICE([libredfish CPPFLAGS: $LIBREDFISH_CPPFLAGS])
+    AC_MSG_NOTICE([libredfish CPPFLAGS: $LIBHIREDFISH_CPPFLAGS])
   fi
   AC_CHECK_HEADERS([redfish.h],
     [with_libredfish="yes"],
@@ -2766,6 +2788,22 @@ LIBS="$SAVE_LIBS"
 AC_SUBST([GCRYPT_CFLAGS])
 AC_SUBST([GCRYPT_LIBS])
 AM_CONDITIONAL([BUILD_WITH_LIBGCRYPT], [test "x$with_libgcrypt" = "xyes"])
+# }}}
+
+# --with-libhbaapi {{{
+with_libhbaapi="yes"
+
+AC_CHECK_HEADERS(sys/hbaapi.h,
+        [ AC_DEFINE(HAVE_SYS_HBAAPI_H, 1, [Define to 1 if you have the <sys/hbaapi.h> header file.]) ])
+
+AC_CHECK_HEADERS(hbaapi.h,
+        [ AC_DEFINE(HAVE_HBAAPI_H, 1, [Define to 1 if you have the <hbaapi.h> header file.]) ])
+
+AC_CHECK_LIB(HBAAPI, HBA_GetVersion,
+        [AC_DEFINE(HAVE_LIBHBAAPI, 1, [Define to 1 if you have the HBAAPI library])],
+        [ with_libhbaapi="no" ])
+
+AM_CONDITIONAL(BUILD_WITH_LIBHBAAPI, test "x$with_libhbaapi" = "xyes")
 # }}}
 
 # --with-libgps {{{
@@ -6369,6 +6407,58 @@ AC_SUBST([BUILD_WITH_LIBXML2_CFLAGS])
 AC_SUBST([BUILD_WITH_LIBXML2_LIBS])
 # }}}
 
+# --with-unixodbc {{{
+AC_ARG_WITH([unixodbc],
+  [AS_HELP_STRING([--with-unixodbc@<:@=PREFIX@:>@], [Path to unixodbc.])],
+  [
+    if test "x$withval" != "xno" && test "x$withval" != "xyes"; then
+      with_unixodbc_cppflags="-I$withval/include"
+      with_unixodbc_ldflags="-L$withval/lib"
+      with_unixodbc="yes"
+    else
+      with_unixodbc="$withval"
+    fi
+  ],
+  [with_unixodbc="yes"]
+)
+
+if test "x$with_unixodbc" = "xyes"; then
+  SAVE_CPPFLAGS="$CPPFLAGS"
+  CPPFLAGS="$CPPFLAGS $with_unixodbc_cppflags"
+
+  AC_CHECK_HEADERS([sql.h],
+    [with_unixodbc="yes"],
+    [with_unixodbc="no (sql.h not found)"]
+  )
+
+  AC_CHECK_HEADERS([sqlext.h],
+    [with_unixodbc="yes"],
+    [with_unixodbc="no (sqlext.h not found)"]
+  )
+
+  CPPFLAGS="$SAVE_CPPFLAGS"
+fi
+
+if test "x$with_unixodbc" = "xyes"; then
+  SAVE_LDFLAGS="$LDFLAGS"
+  LDFLAGS="$LDFLAGS $with_unixodbc_ldflags"
+
+  AC_CHECK_LIB([odbc], [SQLAllocHandle],
+    [with_unixodbc="yes"],
+    [with_unixodbc="no (Symbol 'SQLAllocHandle' not found)"]
+  )
+
+  LDFLAGS="$SAVE_LDFLAGS"
+fi
+
+BUILD_WITH_UNIXODBC_CPPFLAGS="$with_unixodbc_cppflags"
+BUILD_WITH_UNIXODBC_LDFLAGS="$with_unixodbc_ldflags"
+BUILD_WITH_UNIXODBC_LIBS="-lodbc"
+AC_SUBST(BUILD_WITH_UNIXODBC_CPPFLAGS)
+AC_SUBST(BUILD_WITH_UNIXODBC_LDFLAGS)
+AC_SUBST(BUILD_WITH_UNIXODBC_LIBS)
+# }}}
+
 # pkg-config --exists libvirt {{{
 $PKG_CONFIG --exists libvirt 2>/dev/null
 if test $? = 0; then
@@ -6762,6 +6852,8 @@ plugin_curl_json="no"
 plugin_curl_xml="no"
 plugin_df="no"
 plugin_disk="no"
+plugin_diskadapter="no"
+plugin_diskpath="no"
 plugin_drbd="no"
 plugin_dpdkevents="no"
 plugin_dpdkstat="no"
@@ -6771,6 +6863,7 @@ plugin_epics="no"
 plugin_ethstat="no"
 plugin_fhcount="no"
 plugin_fscache="no"
+plugin_hba="no"
 plugin_gps="no"
 plugin_gpu_nvidia="no"
 plugin_grpc="no"
@@ -6820,7 +6913,9 @@ plugin_users="no"
 plugin_virt="no"
 plugin_vmem="no"
 plugin_vserver="no"
+plugin_wlm="no"
 plugin_wireless="no"
+plugin_wpar="no"
 plugin_write_prometheus="no"
 plugin_write_stackdriver="no"
 plugin_xencpu="no"
@@ -6938,15 +7033,27 @@ if test "x$with_perfstat" = "xyes"; then
   plugin_contextswitch="yes"
   plugin_cpu="yes"
   plugin_disk="yes"
+  plugin_diskadapter="yes"
+  plugin_diskpath="yes"
+  plugin_ethstat="yes"
   plugin_interface="yes"
   plugin_load="yes"
   plugin_memory="yes"
+  plugin_nfs="yes"
   plugin_swap="yes"
   plugin_uptime="yes"
+  plugin_tape="yes"
+  plugin_vmem="yes"
+  plugin_wpar="yes"
 fi
 
 if test "x$with_procinfo" = "xyes"; then
   plugin_processes="yes"
+fi
+
+if test "x$with_wlm" = "xyes"
+then
+        plugin_wlm="yes"
 fi
 
 # Solaris
@@ -7077,6 +7184,11 @@ if test "x$with_libprotobuf" != "xyes"; then
 fi
 if test "x$with_libgrpcpp" != "xyes"; then
   plugin_grpc="no (libgrpc++ not found)"
+fi
+
+if test "x$with_libodm" = "xyes" || test "x$with_libhbaapi" = "xyes"
+then
+       plugin_hba="yes"
 fi
 
 if test "x$have_getifaddrs" = "xyes"; then
@@ -7240,6 +7352,8 @@ AC_PLUGIN([dbi],                 [$with_libdbi],              [General database 
 AC_PLUGIN([dcpmm],               [$with_libpmwapi],           [Intel(R) Optane(TM) DC Persistent Memory performance and health statistics])
 AC_PLUGIN([df],                  [$plugin_df],                [Filesystem usage statistics])
 AC_PLUGIN([disk],                [$plugin_disk],              [Disk usage statistics])
+AC_PLUGIN([diskadapter],         [$plugin_diskadapter],       [Disk adapter usage statistics])
+AC_PLUGIN([diskpath],            [$plugin_diskpath],          [Disk path usage statistics])
 AC_PLUGIN([dns],                 [$with_libpcap],             [DNS traffic analysis])
 AC_PLUGIN([dpdkevents],          [$plugin_dpdkevents],        [Events from DPDK])
 AC_PLUGIN([dpdkstat],            [$plugin_dpdkstat],          [Stats from DPDK])
@@ -7254,6 +7368,7 @@ AC_PLUGIN([fhcount],             [$plugin_fhcount],           [File handles stat
 AC_PLUGIN([filecount],           [yes],                       [Count files in directories])
 AC_PLUGIN([fscache],             [$plugin_fscache],           [fscache statistics])
 AC_PLUGIN([gmond],               [$with_libganglia],          [Ganglia plugin])
+AC_PLUGIN([hba],                 [$plugin_hba],               [HBA usage statistics])
 AC_PLUGIN([gps],                 [$plugin_gps],               [GPS plugin])
 AC_PLUGIN([gpu_nvidia],          [$with_cuda],                [NVIDIA GPU plugin])
 AC_PLUGIN([grpc],                [$plugin_grpc],              [gRPC plugin])
@@ -7291,6 +7406,7 @@ AC_PLUGIN([memcached],           [yes],                       [memcached statist
 AC_PLUGIN([memory],              [$plugin_memory],            [Memory usage])
 AC_PLUGIN([mic],                 [$with_mic],                 [Intel Many Integrated Core stats])
 AC_PLUGIN([modbus],              [$with_libmodbus],           [Modbus plugin])
+AC_PLUGIN([mongodb],             [$with_libmongoc],           [MongoDB plugin])
 AC_PLUGIN([mqtt],                [$with_libmosquitto],        [MQTT output plugin])
 AC_PLUGIN([mmc],                 [$plugin_mmc],               [MMC statistics])
 AC_PLUGIN([multimeter],          [$plugin_multimeter],        [Read multimeter values])
@@ -7301,12 +7417,15 @@ AC_PLUGIN([netstat_udp],         [$plugin_netstat_udp],       [UDP network stati
 AC_PLUGIN([network],             [yes],                       [Network communication plugin])
 AC_PLUGIN([nfs],                 [$plugin_nfs],               [NFS statistics])
 AC_PLUGIN([nginx],               [$with_libcurl],             [nginx statistics])
+AC_PLUGIN([notify_dbi],          [$with_libdbi],              [Database notifier])
 AC_PLUGIN([notify_desktop],      [$with_libnotify],           [Desktop notifications])
 AC_PLUGIN([notify_email],        [$with_libesmtp],            [Email notifier])
 AC_PLUGIN([notify_nagios],       [yes],                       [Nagios notification plugin])
+AC_PLUGIN([notify_snmp],         [$with_libnetsnmp],          [SNMP notifier])
 AC_PLUGIN([ntpd],                [yes],                       [NTPd statistics])
 AC_PLUGIN([numa],                [$plugin_numa],              [NUMA virtual memory statistics])
 AC_PLUGIN([nut],                 [$with_libupsclient],        [Network UPS tools statistics])
+AC_PLUGIN([odbc],                [$with_unixodbc],            [ODBC database statistics])
 AC_PLUGIN([olsrd],               [yes],                       [olsrd statistics])
 AC_PLUGIN([onewire],             [$with_libowcapi],           [OneWire sensor statistics])
 AC_PLUGIN([openldap],            [$with_libldap],             [OpenLDAP statistics])
@@ -7370,6 +7489,8 @@ AC_PLUGIN([virt],                [$plugin_virt],              [Virtual machine s
 AC_PLUGIN([vmem],                [$plugin_vmem],              [Virtual memory statistics])
 AC_PLUGIN([vserver],             [$plugin_vserver],           [Linux VServer statistics])
 AC_PLUGIN([wireless],            [$plugin_wireless],          [Wireless statistics])
+AC_PLUGIN([wlm],                 [$plugin_wlm],               [WLM statistics])
+AC_PLUGIN([wpar],                [$plugin_wpar],              [WPAR statistics])
 AC_PLUGIN([write_graphite],      [yes],                       [Graphite / Carbon output plugin])
 AC_PLUGIN([write_http],          [$with_libcurl],             [HTTP output plugin])
 AC_PLUGIN([write_influxdb_udp],  [yes],                       [Influxdb udp output plugin])
@@ -7591,6 +7712,7 @@ AC_MSG_RESULT([    libdpdk . . . . . . . $with_libdpdk])
 AC_MSG_RESULT([    libesmtp  . . . . . . $with_libesmtp])
 AC_MSG_RESULT([    libganglia  . . . . . $with_libganglia])
 AC_MSG_RESULT([    libgcrypt . . . . . . $with_libgcrypt])
+AC_MSG_RESULT([    libHBAAPI . . . . . . $with_libhbaapi])
 AC_MSG_RESULT([    libgps  . . . . . . . $with_libgps])
 AC_MSG_RESULT([    libgrpc++ . . . . . . $with_libgrpcpp])
 AC_MSG_RESULT([    libhiredis  . . . . . $with_libhiredis])
@@ -7618,6 +7740,7 @@ AC_MSG_RESULT([    libnotify . . . . . . $with_libnotify])
 AC_MSG_RESULT([    libnvidia-ml  . . . . $with_cuda])
 AC_MSG_RESULT([    libopenipmi . . . . . $with_libopenipmipthread])
 AC_MSG_RESULT([    liboping  . . . . . . $with_liboping])
+AC_MSG_RESULT([    libodm  . . . . . . . $with_libodm])
 AC_MSG_RESULT([    libowcapi . . . . . . $with_libowcapi])
 AC_MSG_RESULT([    libpcap . . . . . . . $with_libpcap])
 AC_MSG_RESULT([    libperfstat . . . . . $with_perfstat])
@@ -7651,6 +7774,7 @@ AC_MSG_RESULT([    libyajl . . . . . . . $with_libyajl])
 AC_MSG_RESULT([    oracle  . . . . . . . $with_oracle])
 AC_MSG_RESULT([    protobuf-c  . . . . . $have_protoc_c])
 AC_MSG_RESULT([    protoc 3  . . . . . . $have_protoc3])
+AC_MSG_RESULT([    unixodbc .. . . . . . $with_unixodbc])
 AC_MSG_RESULT()
 AC_MSG_RESULT([  Features:])
 AC_MSG_RESULT([    daemon mode . . . . . $enable_daemon])
@@ -7691,6 +7815,7 @@ AC_MSG_RESULT([    dbi . . . . . . . . . $enable_dbi])
 AC_MSG_RESULT([    dcpmm  . . . . . .  . $enable_dcpmm])
 AC_MSG_RESULT([    df  . . . . . . . . . $enable_df])
 AC_MSG_RESULT([    disk  . . . . . . . . $enable_disk])
+AC_MSG_RESULT([    diskadapter . . . . . $enable_diskadapter])
 AC_MSG_RESULT([    dns . . . . . . . . . $enable_dns])
 AC_MSG_RESULT([    dpdkevents. . . . . . $enable_dpdkevents])
 AC_MSG_RESULT([    dpdkstat  . . . . . . $enable_dpdkstat])
@@ -7708,6 +7833,7 @@ AC_MSG_RESULT([    gmond . . . . . . . . $enable_gmond])
 AC_MSG_RESULT([    gps . . . . . . . . . $enable_gps])
 AC_MSG_RESULT([    gpu_nvidia  . . . . . $enable_gpu_nvidia])
 AC_MSG_RESULT([    grpc  . . . . . . . . $enable_grpc])
+AC_MSG_RESULT([    hba . . . . . . . . . $enable_hba])
 AC_MSG_RESULT([    hddtemp . . . . . . . $enable_hddtemp])
 AC_MSG_RESULT([    hugepages . . . . . . $enable_hugepages])
 AC_MSG_RESULT([    infiniband  . . . . . $enable_infiniband])
@@ -7743,6 +7869,7 @@ AC_MSG_RESULT([    memory  . . . . . . . $enable_memory])
 AC_MSG_RESULT([    mic . . . . . . . . . $enable_mic])
 AC_MSG_RESULT([    mmc . . . . . . . . . $enable_mmc])
 AC_MSG_RESULT([    modbus  . . . . . . . $enable_modbus])
+AC_MSG_RESULT([    mongodb . . . . . . . $enable_mongodb])
 AC_MSG_RESULT([    mqtt  . . . . . . . . $enable_mqtt])
 AC_MSG_RESULT([    multimeter  . . . . . $enable_multimeter])
 AC_MSG_RESULT([    mysql . . . . . . . . $enable_mysql])
@@ -7752,12 +7879,15 @@ AC_MSG_RESULT([    netstat_udp . . . . . $enable_netstat_udp])
 AC_MSG_RESULT([    network . . . . . . . $enable_network])
 AC_MSG_RESULT([    nfs . . . . . . . . . $enable_nfs])
 AC_MSG_RESULT([    nginx . . . . . . . . $enable_nginx])
+AC_MSG_RESULT([    notify_dbi  . . . . . $enable_notify_dbi])
 AC_MSG_RESULT([    notify_desktop  . . . $enable_notify_desktop])
 AC_MSG_RESULT([    notify_email  . . . . $enable_notify_email])
 AC_MSG_RESULT([    notify_nagios . . . . $enable_notify_nagios])
+AC_MSG_RESULT([    notify_snmp   . . . . $enable_notify_snmp])
 AC_MSG_RESULT([    ntpd  . . . . . . . . $enable_ntpd])
 AC_MSG_RESULT([    numa  . . . . . . . . $enable_numa])
 AC_MSG_RESULT([    nut . . . . . . . . . $enable_nut])
+AC_MSG_RESULT([    odbc  . . . . . . . . $enable_odbc])
 AC_MSG_RESULT([    olsrd . . . . . . . . $enable_olsrd])
 AC_MSG_RESULT([    onewire . . . . . . . $enable_onewire])
 AC_MSG_RESULT([    openldap  . . . . . . $enable_openldap])
@@ -7820,6 +7950,8 @@ AC_MSG_RESULT([    virt  . . . . . . . . $enable_virt])
 AC_MSG_RESULT([    vmem  . . . . . . . . $enable_vmem])
 AC_MSG_RESULT([    vserver . . . . . . . $enable_vserver])
 AC_MSG_RESULT([    wireless  . . . . . . $enable_wireless])
+AC_MSG_RESULT([    wlm . . . . . . . . . $enable_wlm])
+AC_MSG_RESULT([    wpar  . . . . . . . . $enable_wpar])
 AC_MSG_RESULT([    write_graphite  . . . $enable_write_graphite])
 AC_MSG_RESULT([    write_http  . . . . . $enable_write_http])
 AC_MSG_RESULT([    write_influxdb_udp. . $enable_write_influxdb_udp])

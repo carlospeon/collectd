@@ -123,7 +123,8 @@ cmd_status_t cmd_handle_getval(FILE *fh, char *buffer) {
   values = NULL;
   values_num = 0;
   status =
-      uc_get_rate_by_name(cmd.cmd.getval.raw_identifier, &values, &values_num);
+      uc_get_rate_by_name(cmd.cmd.getval.identifier.host,
+                          cmd.cmd.getval.raw_identifier, &values, &values_num);
   if (status != 0) {
     cmd_error(CMD_ERROR, &err, "No such value.");
     cmd_destroy(&cmd);

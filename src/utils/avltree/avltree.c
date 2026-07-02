@@ -25,6 +25,8 @@
  **/
 
 #include <assert.h>
+#include <stdarg.h>
+#include <stdbool.h>
 #include <stdlib.h>
 
 #include "utils/avltree/avltree.h"
@@ -514,6 +516,35 @@ int c_avl_remove(c_avl_tree_t *t, const void *key, void **rkey, void **rvalue) {
   --t->size;
   return status;
 } /* void *c_avl_remove */
+
+int c_avl_remove_if(c_avl_tree_t *t, const void *key, void **rkey, void **rvalue,
+                    c_avl_check *check, ...) {
+  c_avl_node_t *n;
+  int status;
+
+  assert(t != NULL);
+
+  n = search(t, key);
+  if (n == NULL)
+    return -1;
+
+  if (rkey != NULL)
+    *rkey = n->key;
+  if (rvalue != NULL)
+    *rvalue = n->value;
+
+  va_list args;
+  va_start(args, check);
+  bool delete = (*check)((void*)n, args);
+  va_end(args);
+  if (!delete)
+    return -1;
+
+  status = _remove(t, n);
+  verify_tree(t->root);
+  --t->size;
+  return status;
+} /* void *c_avl_remove_if */
 
 int c_avl_get(c_avl_tree_t *t, const void *key, void **value) {
   c_avl_node_t *n;

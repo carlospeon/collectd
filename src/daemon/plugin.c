@@ -93,12 +93,11 @@ struct cache_event_func_s {
 };
 typedef struct cache_event_func_s cache_event_func_t;
 
-struct write_queue_s;
-typedef struct write_queue_s write_queue_t;
-struct write_queue_s {
-  value_list_t *vl;
-  plugin_ctx_t ctx;
-  write_queue_t *next;
+struct notification_queue_s;
+typedef struct notification_queue_s notification_queue_t;
+struct notification_queue_s {
+  notification_t *notif;
+  notification_queue_t *next;
 };
 
 struct flush_callback_s {
@@ -113,9 +112,11 @@ typedef struct flush_callback_s flush_callback_t;
 static c_avl_tree_t *plugins_loaded;
 
 static llist_t *list_init;
+static llist_t *list_thread_start;
 static llist_t *list_write;
 static llist_t *list_flush;
 static llist_t *list_missing;
+static llist_t *list_thread_stop;
 static llist_t *list_shutdown;
 static llist_t *list_log;
 static llist_t *list_notification;
@@ -145,11 +146,21 @@ static cdtime_t max_read_interval = DEFAULT_MAX_READ_INTERVAL;
 static write_queue_t *write_queue_head;
 static write_queue_t *write_queue_tail;
 static long write_queue_length;
+static long write_queue_batch_sum_length;
 static bool write_loop = true;
 static pthread_mutex_t write_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t write_cond = PTHREAD_COND_INITIALIZER;
 static pthread_t *write_threads;
 static size_t write_threads_num;
+
+static notification_queue_t *notification_queue_head;
+static notification_queue_t *notification_queue_tail;
+static long notification_queue_length;
+static bool notification_loop = true;
+static pthread_mutex_t notification_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t notification_cond = PTHREAD_COND_INITIALIZER;
+static pthread_t *notification_threads;
+static size_t notification_threads_num;
 
 static pthread_key_t plugin_ctx_key;
 static bool plugin_ctx_key_initialized;
@@ -161,6 +172,7 @@ static pthread_mutex_t statistics_lock = PTHREAD_MUTEX_INITIALIZER;
 static derive_t stats_values_dropped;
 static bool record_statistics;
 
+static bool normalize_time = false;
 /*
  * Static functions
  */
@@ -175,6 +187,8 @@ static const char *plugin_get_dir(void) {
 
 static int plugin_update_internal_statistics(void) { /* {{{ */
   gauge_t copy_write_queue_length = (gauge_t)write_queue_length;
+  gauge_t copy_write_queue_batch_sum_length =
+      (gauge_t)write_queue_batch_sum_length;
 
   /* Initialize `vl' */
   value_list_t vl = VALUE_LIST_INIT;
@@ -185,10 +199,17 @@ static int plugin_update_internal_statistics(void) { /* {{{ */
   sstrncpy(vl.plugin_instance, "write_queue", sizeof(vl.plugin_instance));
 
   /* Write queue : queue length */
-  vl.values = &(value_t){.gauge = copy_write_queue_length};
+  vl.values = &(value_t){.gauge = copy_write_queue_batch_sum_length};
   vl.values_len = 1;
   sstrncpy(vl.type, "queue_length", sizeof(vl.type));
   vl.type_instance[0] = 0;
+  plugin_dispatch_values(&vl);
+
+  /* Write queue : root queue length */
+  vl.values = &(value_t){.gauge = copy_write_queue_length};
+  vl.values_len = 1;
+  sstrncpy(vl.type, "gauge", sizeof(vl.type));
+  sstrncpy(vl.type_instance, "queues", sizeof(vl.type_instance));
   plugin_dispatch_values(&vl);
 
   /* Write queue : Values dropped (queue length > low limit) */
@@ -205,6 +226,18 @@ static int plugin_update_internal_statistics(void) { /* {{{ */
   vl.values = &(value_t){.gauge = (gauge_t)uc_get_size()};
   vl.values_len = 1;
   sstrncpy(vl.type, "cache_size", sizeof(vl.type));
+  vl.type_instance[0] = 0;
+  plugin_dispatch_values(&vl);
+
+  gauge_t copy_notification_queue_length = (gauge_t)notification_queue_length;
+  /* Notification queue */
+  sstrncpy(vl.plugin_instance, "notification_queue",
+           sizeof(vl.plugin_instance));
+
+  /* Notification queue : queue length */
+  vl.values = &(value_t){.gauge = copy_notification_queue_length};
+  vl.values_len = 1;
+  sstrncpy(vl.type, "queue_length", sizeof(vl.type));
   vl.type_instance[0] = 0;
   plugin_dispatch_values(&vl);
 
@@ -272,7 +305,7 @@ static void destroy_read_heap(void) /* {{{ */
   read_heap = NULL;
 } /* }}} void destroy_read_heap */
 
-static int register_callback(llist_t **list, /* {{{ */
+static int register_callback(llist_t **list, bool prepend, /* {{{ */
                              const char *name, callback_func_t *cf) {
 
   if (*list == NULL) {
@@ -303,15 +336,13 @@ static int register_callback(llist_t **list, /* {{{ */
       return -1;
     }
 
-    llist_append(*list, le);
+    if (prepend)
+      llist_prepend(*list, le);
+    else
+      llist_append(*list, le);
   } else {
     callback_func_t *old_cf = le->value;
     le->value = cf;
-
-    P_WARNING("register_callback: "
-              "a callback named `%s' already exists - "
-              "overwriting the old entry!",
-              name);
 
     destroy_callback(old_cf);
     sfree(key);
@@ -356,7 +387,7 @@ static void log_list_callbacks(llist_t **list, /* {{{ */
   sfree(keys);
 } /* }}} void log_list_callbacks */
 
-static int create_register_callback(llist_t **list, /* {{{ */
+static int create_register_callback(llist_t **list, bool prepend, /* {{{ */
                                     const char *name, void *callback,
                                     user_data_t const *ud) {
 
@@ -382,7 +413,7 @@ static int create_register_callback(llist_t **list, /* {{{ */
 
   cf->cf_ctx = plugin_get_ctx();
 
-  return register_callback(list, name, cf);
+  return register_callback(list, prepend, name, cf);
 } /* }}} int create_register_callback */
 
 static int plugin_unregister(llist_t *list, const char *name) /* {{{ */
@@ -447,6 +478,27 @@ static int plugin_load_file(char const *file, bool global) {
   return 0;
 }
 
+static cdtime_t plugin_normalize_time(cdtime_t cdtime, cdtime_t cdinterval) {
+  struct timeval tv;
+  time_t interval = CDTIME_T_TO_TIME_T(cdinterval);
+  time_t mod;
+
+  tv = CDTIME_T_TO_TIMEVAL(cdtime);
+
+  if (tv.tv_usec > 0) {
+    tv.tv_usec = 0;
+    tv.tv_sec++;
+  }
+
+  mod = tv.tv_sec % interval;
+  if (mod == 0)
+    return cdtime;
+
+  tv.tv_sec = tv.tv_sec + (interval - mod);
+
+  return TIMEVAL_TO_CDTIME_T(&tv);
+}
+
 static void *plugin_read_thread(void __attribute__((unused)) * args) {
   while (read_loop != 0) {
     read_func_t *rf;
@@ -479,6 +531,10 @@ static void *plugin_read_thread(void __attribute__((unused)) * args) {
       rf->rf_effective_interval = rf->rf_interval;
 
       rf->rf_next_read = cdtime();
+      if (normalize_time)
+        rf->rf_next_read = plugin_normalize_time(cdtime(), rf->rf_interval);
+      else
+        rf->rf_next_read = cdtime();
     }
 
     /* sleep until this entry is due,
@@ -588,7 +644,11 @@ static void *plugin_read_thread(void __attribute__((unused)) * args) {
       /* `rf_next_read' is in the past. Insert `now'
        * so this value doesn't trail off into the
        * past too much. */
-      rf->rf_next_read = now;
+      if (normalize_time)
+        rf->rf_next_read =
+            plugin_normalize_time(now, rf->rf_effective_interval);
+      else
+        rf->rf_next_read = now;
     }
 
     DEBUG("plugin_read_thread: Next read of the `%s' plugin at %.3f.",
@@ -694,7 +754,7 @@ static void plugin_value_list_free(value_list_t *vl) /* {{{ */
   sfree(vl);
 } /* }}} void plugin_value_list_free */
 
-static value_list_t *
+EXPORT value_list_t *
 plugin_value_list_clone(value_list_t const *vl_orig) /* {{{ */
 {
   value_list_t *vl;
@@ -734,37 +794,57 @@ plugin_value_list_clone(value_list_t const *vl_orig) /* {{{ */
   return vl;
 } /* }}} value_list_t *plugin_value_list_clone */
 
+EXPORT write_queue_t *plugin_init_write_queue(void) {
+  write_queue_t *q = malloc(sizeof(*q));
+  if (q != NULL) {
+    q->batch_head = NULL;
+    q->batch_tail = NULL;
+    q->batch_length = 0;
+    q->next = NULL;
+  }
+  return q;
+}
+
 static int plugin_write_enqueue(value_list_t const *vl) /* {{{ */
 {
-  write_queue_t *q;
-
-  q = malloc(sizeof(*q));
-  if (q == NULL)
+  write_batch_t *b = malloc(sizeof(*b));
+  if (b == NULL)
     return ENOMEM;
-  q->next = NULL;
+  b->next = NULL;
 
-  q->vl = plugin_value_list_clone(vl);
-  if (q->vl == NULL) {
-    sfree(q);
+  b->vl = plugin_value_list_clone(vl);
+  if (b->vl == NULL) {
+    sfree(b);
     return ENOMEM;
   }
 
   /* Store context of caller (read plugin); otherwise, it would not be
    * available to the write plugins when actually dispatching the
    * value-list later on. */
-  q->ctx = plugin_get_ctx();
+  b->ctx = plugin_get_ctx();
 
   pthread_mutex_lock(&write_lock);
 
   if (write_queue_tail == NULL) {
+    write_queue_t *q = plugin_init_write_queue();
+    if (q == NULL) {
+      sfree(b);
+      pthread_mutex_unlock(&write_lock);
+      return ENOMEM;
+    }
     write_queue_head = q;
     write_queue_tail = q;
     write_queue_length = 1;
-  } else {
-    write_queue_tail->next = q;
-    write_queue_tail = q;
-    write_queue_length += 1;
   }
+
+  if (write_queue_tail->batch_tail == NULL) {
+    write_queue_tail->batch_head = b;
+  } else {
+    write_queue_tail->batch_tail->next = b;
+  }
+  write_queue_tail->batch_tail = b;
+  write_queue_tail->batch_length++;
+  write_queue_batch_sum_length++;
 
   pthread_cond_signal(&write_cond);
   pthread_mutex_unlock(&write_lock);
@@ -772,11 +852,27 @@ static int plugin_write_enqueue(value_list_t const *vl) /* {{{ */
   return 0;
 } /* }}} int plugin_write_enqueue */
 
-static value_list_t *plugin_write_dequeue(void) /* {{{ */
-{
-  write_queue_t *q;
-  value_list_t *vl;
+static int plugin_write_enqueue_queue(write_queue_t *head, write_queue_t *tail,
+                                      long length, long batch_sum_length) {
+  pthread_mutex_lock(&write_lock);
 
+  if (write_queue_tail == NULL) {
+    write_queue_head = head;
+  } else {
+    write_queue_tail->next = head;
+  }
+  write_queue_tail = tail;
+  write_queue_length += length;
+  write_queue_batch_sum_length += batch_sum_length;
+
+  pthread_cond_broadcast(&write_cond);
+  pthread_mutex_unlock(&write_lock);
+
+  return 0;
+} /* int plugin_write_enqueue_queue */
+
+static write_batch_t *plugin_write_dequeue(void) /* {{{ */
+{
   pthread_mutex_lock(&write_lock);
 
   while (write_loop && (write_queue_head == NULL))
@@ -787,33 +883,73 @@ static value_list_t *plugin_write_dequeue(void) /* {{{ */
     return NULL;
   }
 
-  q = write_queue_head;
-  write_queue_head = q->next;
-  write_queue_length -= 1;
+  write_queue_t *q = write_queue_head;
+  write_queue_head = write_queue_head->next;
+  write_queue_length--;
+  write_queue_batch_sum_length -= q->batch_length;
   if (write_queue_head == NULL) {
     write_queue_tail = NULL;
-    assert(0 == write_queue_length);
+    assert(write_queue_length == 0);
   }
 
   pthread_mutex_unlock(&write_lock);
 
-  (void)plugin_set_ctx(q->ctx);
-
-  vl = q->vl;
+  write_batch_t *b = q->batch_head;
   sfree(q);
-  return vl;
-} /* }}} value_list_t *plugin_write_dequeue */
+
+  return b;
+} /* }}} write_batch_t *plugin_write_dequeue */
 
 static void *plugin_write_thread(void __attribute__((unused)) * args) /* {{{ */
 {
+
+  for (llentry_t *le = llist_head(list_thread_start); le != NULL;
+       le = le->next) {
+    callback_func_t *cf = le->value;
+    plugin_ctx_t old_ctx = plugin_set_ctx(cf->cf_ctx);
+    plugin_thread_start_cb callback = cf->cf_callback;
+    int status = (*callback)(&cf->cf_udata);
+    plugin_set_ctx(old_ctx);
+
+    if (status != 0) {
+      ERROR("Thread start of plugin `%s' "
+            "failed with status %i. "
+            "Write will be unregistered.",
+            le->key, status);
+      plugin_unregister_write(le->key);
+    }
+  }
+
   while (write_loop) {
-    value_list_t *vl = plugin_write_dequeue();
-    if (vl == NULL)
+    write_batch_t *b_head = plugin_write_dequeue();
+    if (b_head == NULL)
       continue;
 
-    plugin_dispatch_values_internal(vl);
+    write_batch_t *b;
+    while ((b = b_head) != NULL) {
+      (void)plugin_set_ctx(b->ctx);
+      plugin_dispatch_values_internal(b->vl);
+      plugin_value_list_free(b->vl);
+      b_head = b->next;
+      sfree(b);
+    }
+  }
 
-    plugin_value_list_free(vl);
+  for (llentry_t *le = llist_head(list_thread_stop); le != NULL;
+       le = le->next) {
+    callback_func_t *cf = le->value;
+    plugin_ctx_t old_ctx = plugin_set_ctx(cf->cf_ctx);
+    plugin_thread_stop_cb callback = cf->cf_callback;
+    int status = (*callback)(&cf->cf_udata);
+    plugin_set_ctx(old_ctx);
+
+    if (status != 0) {
+      ERROR("Thread stop of plugin `%s' "
+            "failed with status %i. "
+            "Write will be unregistered.",
+            le->key, status);
+      plugin_unregister_write(le->key);
+    }
   }
 
   pthread_exit(NULL);
@@ -854,9 +990,6 @@ static void start_write_threads(size_t num) /* {{{ */
 
 static void stop_write_threads(void) /* {{{ */
 {
-  write_queue_t *q;
-  size_t i;
-
   if (write_threads == NULL)
     return;
 
@@ -868,7 +1001,7 @@ static void stop_write_threads(void) /* {{{ */
   pthread_cond_broadcast(&write_cond);
   pthread_mutex_unlock(&write_lock);
 
-  for (i = 0; i < write_threads_num; i++) {
+  for (size_t i = 0; i < write_threads_num; i++) {
     if (pthread_join(write_threads[i], NULL) != 0) {
       ERROR("plugin: stop_write_threads: pthread_join failed.");
     }
@@ -878,25 +1011,227 @@ static void stop_write_threads(void) /* {{{ */
   write_threads_num = 0;
 
   pthread_mutex_lock(&write_lock);
-  i = 0;
-  for (q = write_queue_head; q != NULL;) {
-    write_queue_t *q1 = q;
-    plugin_value_list_free(q->vl);
-    q = q->next;
-    sfree(q1);
-    i++;
+
+  write_queue_t *q;
+  while ((q = write_queue_head) != NULL) {
+    write_batch_t *b;
+    while ((b = q->batch_head) != NULL) {
+      plugin_value_list_free(b->vl);
+      q->batch_head = b->next;
+      q->batch_length--;
+      sfree(b);
+    }
+    q->batch_tail = NULL;
+    write_queue_head = q->next;
+    write_queue_length--;
+    sfree(q);
   }
-  write_queue_head = NULL;
   write_queue_tail = NULL;
-  write_queue_length = 0;
+  if (write_queue_batch_sum_length > 0) {
+    WARNING("plugin: %ld value list%s left after shutting down "
+            "the write threads.",
+            write_queue_batch_sum_length,
+            (write_queue_batch_sum_length == 1) ? " was" : "s were");
+  }
+  write_queue_batch_sum_length = 0;
   pthread_mutex_unlock(&write_lock);
 
-  if (i > 0) {
-    WARNING("plugin: %" PRIsz " value list%s left after shutting down "
-            "the write threads.",
-            i, (i == 1) ? " was" : "s were");
-  }
 } /* }}} void stop_write_threads */
+
+static notification_t *notification_dequeue(void) {
+  pthread_mutex_lock(&notification_lock);
+
+  while (notification_loop && (notification_queue_head == NULL))
+    pthread_cond_wait(&notification_cond, &notification_lock);
+
+  if (notification_queue_head == NULL) {
+    pthread_mutex_unlock(&notification_lock);
+    return NULL;
+  }
+
+  notification_queue_t *q = notification_queue_head;
+  notification_queue_head = q->next;
+  notification_queue_length -= 1;
+  if (notification_queue_head == NULL) {
+    notification_queue_tail = NULL;
+    assert(0 == notification_queue_length);
+  }
+
+  pthread_mutex_unlock(&notification_lock);
+
+  notification_t *notif = q->notif;
+  sfree(q);
+  return notif;
+} /* notification_t *notification_dequeue */
+
+static int plugin_dispatch_notification_internal(const notification_t *notif) {
+  llentry_t *le;
+  /* Possible TODO: Add flap detection here */
+
+  DEBUG("plugin_dispatch_notification: severity = %i; message = %s; "
+        "time = %.3f; host = %s;",
+        notif->severity, notif->message, CDTIME_T_TO_DOUBLE(notif->time),
+        notif->host);
+
+  /* Nobody cares for notification */
+  if (list_notification == NULL)
+    return -1;
+
+  le = llist_head(list_notification);
+  while (le != NULL) {
+    callback_func_t *cf;
+    plugin_notification_cb callback;
+    int status;
+
+    /* do not switch plugin context; rather keep the context
+     * (interval) information of the calling plugin */
+
+    cf = le->value;
+    callback = cf->cf_callback;
+    status = (*callback)(notif, &cf->cf_udata);
+    if (status != 0) {
+      WARNING("plugin_dispatch_notification: Notification "
+              "callback %s returned %i.",
+              le->key, status);
+    }
+
+    le = le->next;
+  }
+
+  return 0;
+} /* int plugin_dispatch_notification_internal */
+
+static void *plugin_notification_thread(void __attribute__((unused)) * args) {
+  for (llentry_t *le = llist_head(list_thread_start); le != NULL;
+       le = le->next) {
+    callback_func_t *cf = le->value;
+    plugin_ctx_t old_ctx = plugin_set_ctx(cf->cf_ctx);
+    plugin_thread_start_cb callback = cf->cf_callback;
+    int status = (*callback)(&cf->cf_udata);
+    plugin_set_ctx(old_ctx);
+
+    if (status != 0) {
+      ERROR("Thread start of plugin `%s' "
+            "failed with status %i. "
+            "Write will be unregistered.",
+            le->key, status);
+      plugin_unregister_write(le->key);
+    }
+  }
+
+  while (notification_loop) {
+    notification_t *notif = notification_dequeue();
+    if (notif == NULL)
+      continue;
+
+    plugin_dispatch_notification_internal(notif);
+
+    if (notif->meta != NULL) {
+      plugin_notification_meta_free(notif->meta);
+      notif->meta = NULL;
+    }
+    sfree(notif);
+  }
+
+  for (llentry_t *le = llist_head(list_thread_stop); le != NULL;
+       le = le->next) {
+    callback_func_t *cf = le->value;
+    plugin_ctx_t old_ctx = plugin_set_ctx(cf->cf_ctx);
+    plugin_thread_stop_cb callback = cf->cf_callback;
+    int status = (*callback)(&cf->cf_udata);
+    plugin_set_ctx(old_ctx);
+
+    if (status != 0) {
+      ERROR("Thread stop of plugin `%s' "
+            "failed with status %i. "
+            "Write will be unregistered.",
+            le->key, status);
+      plugin_unregister_write(le->key);
+    }
+  }
+
+  pthread_exit(NULL);
+  return (void *)0;
+} /* void *plugin_notification_thread */
+
+static void start_notification_threads(size_t num) {
+  if (notification_threads != NULL)
+    return;
+
+  notification_threads = calloc(num, sizeof(*notification_threads));
+  if (notification_threads == NULL) {
+    ERROR("plugin: start_notification_threads: calloc failed.");
+    return;
+  }
+
+  notification_threads_num = 0;
+  for (size_t i = 0; i < num; i++) {
+    int status = pthread_create(notification_threads + notification_threads_num,
+                                /* attr = */ NULL, plugin_notification_thread,
+                                /* arg = */ NULL);
+    if (status != 0) {
+      ERROR("plugin: start_notification_threads: pthread_create failed with "
+            "status %i "
+            "(%s).",
+            status, STRERROR(status));
+      return;
+    }
+
+    char name[THREAD_NAME_MAX];
+    ssnprintf(name, sizeof(name), "notification#%" PRIu64,
+              (uint64_t)notification_threads_num);
+    set_thread_name(notification_threads[notification_threads_num], name);
+
+    notification_threads_num++;
+  } /* for (i) */
+} /* void start_notification_threads */
+
+static void stop_notification_threads(void) {
+  if (notification_threads == NULL)
+    return;
+
+  INFO("collectd: Stopping %" PRIsz " notification threads.",
+       notification_threads_num);
+
+  pthread_mutex_lock(&notification_lock);
+  notification_loop = false;
+  DEBUG("plugin: stop_notification_threads: Signalling `notification_cond'");
+  pthread_cond_broadcast(&notification_cond);
+  pthread_mutex_unlock(&notification_lock);
+
+  for (size_t i = 0; i < notification_threads_num; i++) {
+    if (pthread_join(notification_threads[i], NULL) != 0) {
+      ERROR("plugin: stop_notification_threads: pthread_join failed.");
+    }
+    notification_threads[i] = (pthread_t)0;
+  }
+  sfree(notification_threads);
+  notification_threads_num = 0;
+
+  pthread_mutex_lock(&notification_lock);
+  size_t n = 0;
+  for (notification_queue_t *q = notification_queue_head; q != NULL;) {
+    if (q->notif->meta != NULL) {
+      plugin_notification_meta_free(q->notif->meta);
+      q->notif->meta = NULL;
+    }
+    sfree(q->notif);
+    notification_queue_t *next = q->next;
+    sfree(q);
+    q = next;
+    n++;
+  }
+  notification_queue_head = NULL;
+  notification_queue_tail = NULL;
+  notification_queue_length = 0;
+  pthread_mutex_unlock(&notification_lock);
+
+  if (n > 0) {
+    WARNING("plugin: %" PRIsz " notification%s left after shutting down "
+            "the notification threads.",
+            n, (n == 1) ? " was" : "s were");
+  }
+} /* void stop_notification_threads */
 
 /*
  * Public functions
@@ -1067,8 +1402,16 @@ EXPORT int plugin_register_complex_config(const char *type,
 } /* int plugin_register_complex_config */
 
 EXPORT int plugin_register_init(const char *name, int (*callback)(void)) {
-  return create_register_callback(&list_init, name, (void *)callback, NULL);
+  return create_register_callback(&list_init, false, name, (void *)callback,
+                                  NULL);
 } /* plugin_register_init */
+
+EXPORT int plugin_register_thread_start(const char *name,
+                                        plugin_thread_start_cb callback,
+                                        user_data_t const *ud) {
+  return create_register_callback(&list_thread_start, false, name,
+                                  (void *)callback, ud);
+} /* plugin_register_thread_start */
 
 static int plugin_compare_read_func(const void *arg0, const void *arg1) {
   const read_func_t *rf0;
@@ -1092,7 +1435,11 @@ static int plugin_insert_read(read_func_t *rf) {
   int status;
   llentry_t *le;
 
-  rf->rf_next_read = cdtime();
+  if (normalize_time)
+    rf->rf_next_read = plugin_normalize_time(cdtime(), rf->rf_interval);
+  else
+    rf->rf_next_read = cdtime();
+
   rf->rf_effective_interval = rf->rf_interval;
 
   pthread_mutex_lock(&read_lock);
@@ -1223,7 +1570,8 @@ EXPORT int plugin_register_complex_read(const char *group, const char *name,
 
 EXPORT int plugin_register_write(const char *name, plugin_write_cb callback,
                                  user_data_t const *ud) {
-  return create_register_callback(&list_write, name, (void *)callback, ud);
+  return create_register_callback(&list_write, false, name, (void *)callback,
+                                  ud);
 } /* int plugin_register_write */
 
 static int plugin_flush_timeout_callback(user_data_t *ud) {
@@ -1268,7 +1616,8 @@ EXPORT int plugin_register_flush(const char *name, plugin_flush_cb callback,
   int status;
   plugin_ctx_t ctx = plugin_get_ctx();
 
-  status = create_register_callback(&list_flush, name, (void *)callback, ud);
+  status =
+      create_register_callback(&list_flush, false, name, (void *)callback, ud);
   if (status != 0)
     return status;
 
@@ -1316,7 +1665,8 @@ EXPORT int plugin_register_flush(const char *name, plugin_flush_cb callback,
 
 EXPORT int plugin_register_missing(const char *name, plugin_missing_cb callback,
                                    user_data_t const *ud) {
-  return create_register_callback(&list_missing, name, (void *)callback, ud);
+  return create_register_callback(&list_missing, false, name, (void *)callback,
+                                  ud);
 } /* int plugin_register_missing */
 
 EXPORT int plugin_register_cache_event(const char *name,
@@ -1376,9 +1726,23 @@ EXPORT int plugin_register_cache_event(const char *name,
   return 0;
 } /* int plugin_register_cache_event */
 
+EXPORT int plugin_register_thread_stop(const char *name,
+                                       plugin_thread_stop_cb callback,
+                                       user_data_t const *ud) {
+  return create_register_callback(&list_thread_stop, false, name,
+                                  (void *)callback, ud);
+} /* plugin_register_thread_stop */
+
 EXPORT int plugin_register_shutdown(const char *name, int (*callback)(void)) {
-  return create_register_callback(&list_shutdown, name, (void *)callback, NULL);
+  return create_register_callback(&list_shutdown, false, name, (void *)callback,
+                                  NULL);
 } /* int plugin_register_shutdown */
+
+EXPORT int plugin_register_shutdown_first(const char *name,
+                                          int (*callback)(void)) {
+  return (create_register_callback(&list_shutdown, true, name, (void *)callback,
+                                   NULL));
+} /* int plugin_register_shutdown_first */
 
 static void plugin_free_data_sets(void) {
   void *key;
@@ -1430,14 +1794,14 @@ EXPORT int plugin_register_data_set(const data_set_t *ds) {
 
 EXPORT int plugin_register_log(const char *name, plugin_log_cb callback,
                                user_data_t const *ud) {
-  return create_register_callback(&list_log, name, (void *)callback, ud);
+  return create_register_callback(&list_log, false, name, (void *)callback, ud);
 } /* int plugin_register_log */
 
 EXPORT int plugin_register_notification(const char *name,
                                         plugin_notification_cb callback,
                                         user_data_t const *ud) {
-  return create_register_callback(&list_notification, name, (void *)callback,
-                                  ud);
+  return create_register_callback(&list_notification, false, name,
+                                  (void *)callback, ud);
 } /* int plugin_register_log */
 
 EXPORT int plugin_unregister_config(const char *name) {
@@ -1452,6 +1816,10 @@ EXPORT int plugin_unregister_complex_config(const char *name) {
 
 EXPORT int plugin_unregister_init(const char *name) {
   return plugin_unregister(list_init, name);
+}
+
+EXPORT int plugin_unregister_thread_start(const char *name) {
+  return plugin_unregister(list_thread_start, name);
 }
 
 EXPORT int plugin_unregister_read(const char *name) /* {{{ */
@@ -1603,6 +1971,10 @@ static void destroy_cache_event_callbacks() {
   }
 }
 
+EXPORT int plugin_unregister_thread_stop(const char *name) {
+  return plugin_unregister(list_thread_stop, name);
+}
+
 EXPORT int plugin_unregister_shutdown(const char *name) {
   return plugin_unregister(list_shutdown, name);
 }
@@ -1649,6 +2021,8 @@ EXPORT int plugin_init_all(void) {
 
   chain_name = global_option_get("PostCacheChain");
   post_cache_chain = fc_chain_get_by_name(chain_name);
+
+  normalize_time = IS_TRUE(global_option_get("NormalizeTime"));
 
   write_limit_high = global_option_get_long("WriteQueueLimitHigh",
                                             /* default = */ 0);
@@ -1725,6 +2099,16 @@ EXPORT int plugin_init_all(void) {
     if (num != -1)
       start_read_threads((num > 0) ? ((size_t)num) : 5);
   }
+
+  notification_threads_num = global_option_get_long("NotificationThreads",
+                                                    /* default = */ 1);
+  if (notification_threads_num < 1) {
+    ERROR("NotificationThreads must be positive.");
+    notification_threads_num = 1;
+  }
+
+  start_notification_threads((size_t)notification_threads_num);
+
   return ret;
 } /* void plugin_init_all */
 
@@ -1910,6 +2294,9 @@ EXPORT int plugin_shutdown_all(void) {
   /* blocks until all write threads have shut down. */
   stop_write_threads();
 
+  /* blocks until all notification threads have shut down. */
+  stop_notification_threads();
+
   /* ask all plugins to write out the state they kept. */
   plugin_flush(/* plugin = */ NULL,
                /* timeout = */ 0,
@@ -2028,7 +2415,7 @@ void plugin_dispatch_cache_event(enum cache_event_type_e event_type,
     }
 
     if (callbacks_mask)
-      uc_set_callbacks_mask(name, callbacks_mask);
+      uc_set_callbacks_mask(vl->host, name, callbacks_mask);
 
     break;
   case CE_VALUE_UPDATE:
@@ -2189,7 +2576,7 @@ static double get_drop_probability(void) /* {{{ */
   long wql;
 
   pthread_mutex_lock(&write_lock);
-  wql = write_queue_length;
+  wql = write_queue_batch_sum_length;
   pthread_mutex_unlock(&write_lock);
 
   if (wql < write_limit_low)
@@ -2246,6 +2633,8 @@ static bool check_drop_value(void) /* {{{ */
 EXPORT int plugin_dispatch_values(value_list_t const *vl) {
   int status;
 
+  assert(vl != NULL);
+
   if (check_drop_value()) {
     if (record_statistics) {
       pthread_mutex_lock(&statistics_lock);
@@ -2258,6 +2647,32 @@ EXPORT int plugin_dispatch_values(value_list_t const *vl) {
   status = plugin_write_enqueue(vl);
   if (status != 0) {
     ERROR("plugin_dispatch_values: plugin_write_enqueue failed with status %i "
+          "(%s).",
+          status, STRERROR(status));
+    return status;
+  }
+
+  return 0;
+}
+
+EXPORT int plugin_dispatch_value_queue(write_queue_t *head, write_queue_t *tail,
+                                       long length, long batch_sum_length) {
+  if (head == NULL || tail == NULL || length == 0 || batch_sum_length == 0)
+    return 0;
+
+  if (check_drop_value()) {
+    if (record_statistics) {
+      pthread_mutex_lock(&statistics_lock);
+      stats_values_dropped += batch_sum_length;
+      pthread_mutex_unlock(&statistics_lock);
+    }
+    return 0;
+  }
+
+  int status = plugin_write_enqueue_queue(head, tail, length, batch_sum_length);
+  if (status != 0) {
+    ERROR("plugin_dispatch_values: plugin_write_enqueue_queue failed with "
+          "status %i "
           "(%s).",
           status, STRERROR(status));
     return status;
@@ -2351,38 +2766,41 @@ plugin_dispatch_multivalue(value_list_t const *template, /* {{{ */
 } /* }}} int plugin_dispatch_multivalue */
 
 EXPORT int plugin_dispatch_notification(const notification_t *notif) {
-  llentry_t *le;
-  /* Possible TODO: Add flap detection here */
+  /* Enqueue notification for a real dispath in a different thread
+   * and do not block read plugins */
 
-  DEBUG("plugin_dispatch_notification: severity = %i; message = %s; "
-        "time = %.3f; host = %s;",
-        notif->severity, notif->message, CDTIME_T_TO_DOUBLE(notif->time),
-        notif->host);
+  if (notif == NULL)
+    return 0;
 
-  /* Nobody cares for notifications */
-  if (list_notification == NULL)
-    return -1;
+  notification_queue_t *q = malloc(sizeof(*q));
+  if (q == NULL)
+    return ENOMEM;
+  q->next = NULL;
 
-  le = llist_head(list_notification);
-  while (le != NULL) {
-    callback_func_t *cf;
-    plugin_notification_cb callback;
-    int status;
+  q->notif = malloc(sizeof(*q->notif));
+  if (q->notif == NULL)
+    return ENOMEM;
 
-    /* do not switch plugin context; rather keep the context
-     * (interval) information of the calling plugin */
+  memcpy(q->notif, notif, sizeof(notification_t));
+  /* Set the `meta' member to NULL, otherwise `plugin_notification_meta_copy'
+   * will run into an endless loop. */
+  q->notif->meta = NULL;
+  plugin_notification_meta_copy(q->notif, notif);
 
-    cf = le->value;
-    callback = cf->cf_callback;
-    status = (*callback)(notif, &cf->cf_udata);
-    if (status != 0) {
-      WARNING("plugin_dispatch_notification: Notification "
-              "callback %s returned %i.",
-              le->key, status);
-    }
+  pthread_mutex_lock(&notification_lock);
 
-    le = le->next;
+  if (notification_queue_tail == NULL) {
+    notification_queue_head = q;
+    notification_queue_tail = q;
+    notification_queue_length = 1;
+  } else {
+    notification_queue_tail->next = q;
+    notification_queue_tail = q;
+    notification_queue_length += 1;
   }
+
+  pthread_cond_signal(&notification_cond);
+  pthread_mutex_unlock(&notification_lock);
 
   return 0;
 } /* int plugin_dispatch_notification */
@@ -2639,6 +3057,18 @@ int plugin_notification_meta_free(notification_meta_t *n) {
   return 0;
 } /* int plugin_notification_meta_free */
 
+int plugin_notification_meta_get_boolean(notification_meta_t *n,
+                                         const char *name, bool *value) {
+  for (notification_meta_t *meta = n; meta != NULL; meta = meta->next) {
+    if (meta->type == NM_TYPE_BOOLEAN &&
+        strncmp(name, meta->name, strlen(name)) == 0) {
+      *value = meta->nm_value.nm_boolean;
+      return 0;
+    }
+  }
+  return -ENOENT;
+}
+
 static void plugin_ctx_destructor(void *ctx) {
   sfree(ctx);
 } /* void plugin_ctx_destructor */
@@ -2756,3 +3186,5 @@ int plugin_thread_create(pthread_t *thread, void *(*start_routine)(void *),
 
   return 0;
 } /* int plugin_thread_create */
+
+EXPORT size_t plugin_get_write_threads_num(void) { return write_threads_num; }
